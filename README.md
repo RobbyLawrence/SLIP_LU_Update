@@ -24,3 +24,5 @@ This will also run a few short demos in `SLIP_LU/Demo`.
 To install the package system-wide, copy the `lib/*` to /usr/local/lib,
 and copy `include/*` to /usr/local/include.
 
+# Changes/Additions for SDIPPS_LU_Update
+This fork will add the SDIPPS update method to the SLIP LU factorization.

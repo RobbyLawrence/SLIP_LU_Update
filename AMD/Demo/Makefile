@@ -9,6 +9,11 @@ gak:
 
 include ../../SuiteSparse_config/SuiteSparse_config.mk
 
+UNAME_S := $(shell uname -s)
+ifneq (,(findstring CYGWIN,$(UNAME_S)))
+	export PATH := ../../lib:$(PATH)
+endif
+
 C = $(CC) $(CF) -I../../include
 
 LIB2 = $(LDFLAGS) -L../../lib -lamd -lsuitesparseconfig $(LDLIBS)

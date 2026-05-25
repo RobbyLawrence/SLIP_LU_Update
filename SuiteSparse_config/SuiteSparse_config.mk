@@ -342,7 +342,9 @@ SUITESPARSE_VERSION = 5.8.0
     # To disable these auto configurations, use 'make UNAME=custom'
 
     ifndef UNAME
-        ifeq ($(OS),Windows_NT)
+        ifneq (,$(findstring CYGWIN,$(shell uname)))
+            UNAME = CYGWIN
+        else ifeq ($(OS),Windows_NT)
             # Cygwin Make on Windows has an $(OS) variable, but not uname.
             # Note that this option is untested.
             UNAME = Windows
@@ -409,6 +411,19 @@ SUITESPARSE_VERSION = 5.8.0
         LAPACK ?=
     endif
 
+    #---------------------------------------------------------------------------
+    # Cygwin
+    #---------------------------------------------------------------------------
+
+    ifeq ($(UNAME),CYGWIN)
+        # On Cygwin, shared library linking is complex. Use static libraries.
+        # Set AR_TARGET and disable shared library building
+        AR_TARGET = $(LIBRARY).a
+        SO_TARGET = $(LIBRARY).a
+        SO_PLAIN = $(LIBRARY).a
+        SO_MAIN = $(LIBRARY).a
+    endif
+
 #===============================================================================
 # finalize the CF compiler flags
 #===============================================================================
@@ -452,6 +467,13 @@ ifeq ($(UNAME),Windows)
     SO_PLAIN  = $(LIBRARY).dll
     SO_MAIN   = $(LIBRARY).$(SO_VERSION).dll
     SO_TARGET = $(LIBRARY).$(VERSION).dll
+    SO_INSTALL_NAME = echo
+else ifeq ($(UNAME),CYGWIN)
+    AR_TARGET = $(LIBRARY).a
+    SO_PLAIN  = $(LIBRARY).dll
+    SO_MAIN   = $(LIBRARY).$(SO_VERSION).dll
+    SO_TARGET = $(LIBRARY).$(VERSION).dll
+    SO_OPTS  += -shared -Wl,--out-implib=$(INSTALL_LIB)/lib$(LIBRARY).dll.a
     SO_INSTALL_NAME = echo
 else
     # Mac or Linux/Unix
