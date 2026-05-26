@@ -50,10 +50,7 @@ SLIP_info SLIP_matrix_free
                 if ( A->x.mpz)
                 for (int64_t i = 0; i < A->nzmax; i++)
                 {
-                    if ( A->x.mpz[i] != NULL)
-                    {
-                        SLIP_MPZ_CLEAR( A->x.mpz[i]);
-                    }
+                    SLIP_MPZ_CLEAR( A->x.mpz[i]);
                 }
                 SLIP_FREE (A->x.mpz);
                 break ;
@@ -62,10 +59,7 @@ SLIP_info SLIP_matrix_free
                 if ( A->x.mpq)
                 for (int64_t i = 0; i < A->nzmax; i++)
                 {
-                    if ( A->x.mpq[i] != NULL)
-                    {
-                        SLIP_MPQ_CLEAR( A->x.mpq[i]);
-                    }
+                    SLIP_MPQ_CLEAR( A->x.mpq[i]);
                 }
                 SLIP_FREE (A->x.mpq);
                 break ;
@@ -74,10 +68,7 @@ SLIP_info SLIP_matrix_free
                 if ( A->x.mpfr)
                 for (int64_t i = 0; i < A->nzmax; i++)
                 {
-                    if ( A->x.mpfr[i] != NULL)
-                    {
-                        SLIP_MPFR_CLEAR( A->x.mpfr[i]);
-                    }
+                    SLIP_MPFR_CLEAR( A->x.mpfr[i]);
                 }
                 SLIP_FREE (A->x.mpfr);
                 break ;

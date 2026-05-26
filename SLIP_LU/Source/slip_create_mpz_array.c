@@ -37,12 +37,20 @@ mpz_t* slip_create_mpz_array
         {
             // Out of memory
             SLIP_MPZ_SET_NULL(x[i]);
-            for (int64_t j = 0; j < n; j++)
+            // for (int64_t j = 0; j < n; j++)
+            // {
+            //     if ( x[j] != NULL)
+            //     {
+            //         SLIP_MPZ_CLEAR( x[j]);
+            //     }
+            // }
+            //
+            // x[j] is an initalized mpz_t not a pointer,
+            // so it is never be null. Just clear the elements
+            // that have been initalized so far.
+            for (int64_t j = 0; j < i; j++)
             {
-                if ( x[j] != NULL)
-                {
-                    SLIP_MPZ_CLEAR( x[j]);
-                }
+                SLIP_MPZ_CLEAR(x[j]);
             }
             SLIP_FREE(x);
             return NULL;

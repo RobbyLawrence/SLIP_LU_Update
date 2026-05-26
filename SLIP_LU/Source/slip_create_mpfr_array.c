@@ -36,12 +36,17 @@ mpfr_t* slip_create_mpfr_array
         if (SLIP_mpfr_init2(x[i], prec) != SLIP_OK)
         {
             SLIP_MPFR_SET_NULL(x[i]);
-            for (int64_t j = 0; j < n; j++)
+            // for (int64_t j = 0; j < n; j++)
+            // {
+            //     if ( x[j] != NULL)
+            //     {
+            //         SLIP_MPFR_CLEAR( x[j]);
+            //     }
+            // }
+
+            for (int64_t j = 0; j < i; j++)
             {
-                if ( x[j] != NULL)
-                {
-                    SLIP_MPFR_CLEAR( x[j]);
-                }
+                SLIP_MPFR_CLEAR(x[j]);
             }
             SLIP_FREE(x);
             return NULL;

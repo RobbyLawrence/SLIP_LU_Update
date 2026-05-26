@@ -37,12 +37,20 @@ mpq_t* slip_create_mpq_array
         {
             // Out of memory
             SLIP_MPQ_SET_NULL(x[i]);
-            for (int64_t j = 0; j < n; j++)
+            // for (int64_t j = 0; j < n; j++)
+            // {
+            //     if ( x[j] != NULL)
+            //     {
+            //         SLIP_MPQ_CLEAR( x[j]);
+            //     }
+            // }
+            //
+            // x[j] is an initalized mpq_t not a pointer,
+            // so it is never be null. Just clear the elements
+            // that have been initalized so far.
+            for (int64_t j = 0; j < i; j++)
             {
-                if ( x[j] != NULL)
-                {
-                    SLIP_MPQ_CLEAR( x[j]);
-                }
+                SLIP_MPQ_CLEAR(x[j]);
             }
             SLIP_FREE(x);
             return NULL;
