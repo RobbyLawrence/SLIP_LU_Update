@@ -29,7 +29,7 @@ LDLIBS += -lm -lgmp -lmpfr -lcolamd -lamd -lsliplu
 CS = $(LDLIBS)
 
 
-all: lib example example2 SLIPLU
+all: lib example example2 SLIPLU qsx_basis
 	- ./example
 	- ./example2
 	- ./SLIPLU
@@ -45,10 +45,14 @@ example2: lib example2.c Makefile
 
 SLIPLU: lib SLIPLU.c demos.h demos.c Makefile
 	$(CC) $(LDFLAGS) $(CF) $(I) -o SLIPLU SLIPLU.c demos.c $(CS)
+
+qsx_basis: lib qsx_basis.c demos.h demos.c Makefile
+	$(CC) $(LDFLAGS) $(CF) $(I) -o qsx_basis qsx_basis.c demos.c $(CS)
+
 clean:
 	- $(RM) *.o
 
 purge: distclean
 
 distclean: clean
-	- $(RM) -r example example2 example3 example4 example5 SLIPLU *.a *.dSYM *.obj *.dll
+	- $(RM) -r example example2 example3 example4 example5 SLIPLU qsx_basis *.a *.dSYM *.obj *.dll

@@ -92,7 +92,7 @@ mpfr_t *slip_gmpfr_archive = NULL ;    // current mpfr object
  * SLIP_gmp_list is NULL
  */
 
-bool slip_gmp_init ( )
+bool slip_gmp_init ( void )
 {
     slip_gmp_nmalloc = 0 ;
     slip_gmp_nlist = SLIP_GMP_LIST_INIT ;
@@ -105,7 +105,7 @@ bool slip_gmp_init ( )
 //------------------------------------------------------------------------------
 
 /* Purpose: Free the list. Must be called when all use of GMP is done */
-void slip_gmp_finalize ( )
+void slip_gmp_finalize ( void )
 {
     slip_gmpz_archive = NULL ;
     slip_gmpq_archive = NULL ;
@@ -409,7 +409,7 @@ SLIP_info SLIP_gmp_printf
     // call gmp_vprintf
     va_list args;
     va_start (args, format) ;
-    int n = gmp_vprintf (format, args) ; 
+    int n = gmp_vprintf (format, args) ;
     va_end (args) ;
 
     // Finish the wrapper
@@ -589,7 +589,7 @@ SLIP_info SLIP_mpfr_printf
     // call mpfr_vprintf
     va_list args;
     va_start (args, format) ;
-    int n = mpfr_vprintf (format, args) ; 
+    int n = mpfr_vprintf (format, args) ;
     va_end (args) ;
     // Free cache from mpfr_vprintf. Even though mpfr_free_cache is
     // called in SLIP_LU_final ( ), it has to be called here to
@@ -1707,4 +1707,3 @@ SLIP_info SLIP_mpfr_free_cache ( void )
     SLIP_GMP_WRAPPER_FINISH ;
     return (SLIP_OK) ;
 }
-

@@ -376,6 +376,9 @@ SUITESPARSE_VERSION = 5.8.0
         LAPACK ?= -framework Accelerate
         # OpenMP is not yet supported by default in clang
         CFOPENMP =
+        LDFLAGS += -Wl,-rpath,$(INSTALL_LIB)
+        CF += -I/opt/homebrew/include
+        LDFLAGS += -L/opt/homebrew/lib
     endif
 
     #---------------------------------------------------------------------------
@@ -485,7 +488,7 @@ else
         SO_TARGET = $(LIBRARY).$(VERSION).dylib
         SO_OPTS  += -dynamiclib -compatibility_version $(SO_VERSION) \
                     -current_version $(VERSION) \
-                    -Wl,-install_name -Wl,$(SO_MAIN) \
+                    -Wl,-install_name -Wl,@rpath/$(SO_MAIN) \
                     -shared -undefined dynamic_lookup
         # When a Mac *.dylib file is moved, this command is required
         # to change its internal name to match its location in the filesystem:

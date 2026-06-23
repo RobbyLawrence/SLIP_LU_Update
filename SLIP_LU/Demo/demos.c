@@ -217,7 +217,7 @@ SLIP_info SLIP_process_command_line //processes the command line
 //------------------------------------------------------------------------------
 
 /* Purpose: This function shows the usage of the code.*/
-void SLIP_show_usage() //display the usage of the code
+void SLIP_show_usage(void) //display the usage of the code
 {
     printf("\n"
     "\n./SLIP_LU followed by:"

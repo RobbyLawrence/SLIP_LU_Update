@@ -14,17 +14,17 @@
 gmon.out
 *.bak
 *.d
-*.gcda 
-*.gcno 
-*.aux 
-*.bbl 
-*.blg 
-*.log 
-*.toc 
-*.dvi 
-*.lof 
+*.gcda
+*.gcno
+*.aux
+*.bbl
+*.blg
+*.log
+*.toc
+*.dvi
+*.lof
 *.lot
-*.dll 
+*.dll
 *.dSYM
 my_*.out
 *.gcda
@@ -229,6 +229,7 @@ SLIP_LU/Demo/example.exe
 SLIP_LU/Demo/SLIPLU.exe
 SLIP_LU/Demo/example2.exe
 
+.cache/*
+
 # Do not ignore this file
 !.gitignore
-
