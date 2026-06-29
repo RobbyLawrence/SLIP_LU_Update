@@ -519,8 +519,26 @@ int main(int argc, char **argv)
         (double)(t1-t0)/CLOCKS_PER_SEC,
         (double)(t2-t1)/CLOCKS_PER_SEC,
         (double)(t3-t2)/CLOCKS_PER_SEC);
-    printf("qsx_basis: nnz(L)=%"PRId64" nnz(U)=%"PRId64"\n",
-        L->p[L->n], U->p[U->n]);
+    // Bit-length of the final pivot (= |det(B)|) and max entry bit-length
+    // in L and U.  The pivot bit-length is the Hadamard-bound cost driver:
+    // every mpz_mul/mpz_divexact in the late columns operates on integers
+    // this large.
+    size_t det_bits = 0;
+    SLIP_mpz_sizeinbase(&det_bits, rhos->x.mpz[rhos->m - 1], 2);
+    size_t max_L_bits = 0, max_U_bits = 0;
+    for (int64_t i = 0; i < L->p[L->n]; i++)
+    {
+        size_t b = 0; SLIP_mpz_sizeinbase(&b, L->x.mpz[i], 2);
+        if (b > max_L_bits) max_L_bits = b;
+    }
+    for (int64_t i = 0; i < U->p[U->n]; i++)
+    {
+        size_t b = 0; SLIP_mpz_sizeinbase(&b, U->x.mpz[i], 2);
+        if (b > max_U_bits) max_U_bits = b;
+    }
+    printf("qsx_basis: nnz(L)=%"PRId64" nnz(U)=%"PRId64
+        " det_bits=%zu max_L_bits=%zu max_U_bits=%zu\n",
+        L->p[L->n], U->p[U->n], det_bits, max_L_bits, max_U_bits);
 
     // Write L, U, x.
     char path[1024];

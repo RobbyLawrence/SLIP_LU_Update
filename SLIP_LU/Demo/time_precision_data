@@ -1,0 +1,6 @@
+/Users/robertlawrence/qsopt-ex/Problems/cycle.mps
+64 scaled_lp 0.027: 0.000000, 1.000000, 0.000000, 0.000000
+scaled_lp 0.027: 0.000000, 1.000000, 0.000000, 0.000000
+dbl_problem 0.000: nan, nan, nan, nan
+128 mpf_problem 0.025: 0.000000, 0.000000, 0.666667, 0.333333
+mpf_problem 0.025: 0.000000, 0.000000, 0.666667, 0.333333

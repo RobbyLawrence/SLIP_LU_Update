@@ -230,6 +230,7 @@ SLIP_LU/Demo/SLIPLU.exe
 SLIP_LU/Demo/example2.exe
 
 .cache/*
+SLIP_LU/Demo/sol*
 
 # Do not ignore this file
 !.gitignore

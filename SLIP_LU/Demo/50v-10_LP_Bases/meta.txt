@@ -1,0 +1,6 @@
+problem: 50v-10_LP
+source_file: /Users/robertlawrence/qsopt-ex/Problems/50v-10_LP.mps
+nrows: 233
+ncols_total: 2246
+nstruct: 2013
+total_snapshots_captured: 315

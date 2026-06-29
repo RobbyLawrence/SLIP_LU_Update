@@ -29,7 +29,7 @@ LDLIBS += -lm -lgmp -lmpfr -lcolamd -lamd -lsliplu
 CS = $(LDLIBS)
 
 
-all: lib example example2 SLIPLU qsx_basis
+all: lib example example2 SLIPLU qsx_basis update_demo
 	- ./example
 	- ./example2
 	- ./SLIPLU
@@ -48,6 +48,12 @@ SLIPLU: lib SLIPLU.c demos.h demos.c Makefile
 
 qsx_basis: lib qsx_basis.c demos.h demos.c Makefile
 	$(CC) $(LDFLAGS) $(CF) $(I) -o qsx_basis qsx_basis.c demos.c $(CS)
+
+update_demo: lib update_demo.c slip_lu_update.c slip_lu_update.h demos.h demos.c Makefile
+	$(CC) $(LDFLAGS) $(CF) $(I) -o update_demo update_demo.c slip_lu_update.c demos.c $(CS)
+
+ordering_ab: lib ordering_ab.c demos.h demos.c Makefile
+	$(CC) $(LDFLAGS) $(CF) $(I) -o ordering_ab ordering_ab.c demos.c $(CS)
 
 clean:
 	- $(RM) *.o

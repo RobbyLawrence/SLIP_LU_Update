@@ -1,0 +1,6 @@
+problem: co9
+source_file: /Users/robertlawrence/qsopt-ex/Problems/co9.mps
+nrows: 10789
+ncols_total: 25640
+nstruct: 14851
+total_snapshots_captured: 18979

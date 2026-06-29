@@ -38,6 +38,7 @@
     SLIP_FREE(pinv);
 
 #include "slip_internal.h"
+#include <time.h>
 
 SLIP_info SLIP_LU_factorize
 (
@@ -186,6 +187,15 @@ SLIP_info SLIP_LU_factorize
     // Iterations 0:n-1 (1:n in standard)
     //--------------------------------------------------------------------------
 
+    // progress reporting: emit one line per column (stderr) so the user can
+    // see where the factorization spends its time.  Every PROGRESS_GROUP
+    // columns we also report wall-clock since the last group and the current
+    // pivot bit-length, which is the dominant cost driver.
+    clock_t t_factor_start = clock();
+    clock_t t_group = t_factor_start;
+    const int64_t PROGRESS_GROUP = (n > 1000) ? (n / 50) : 100;
+    fprintf(stderr, "[SLIP_LU_factorize] n=%"PRId64" start\n", n);
+
     for (k = 0; k < n; k++)
     {
         // Column pointers for column k of L and U
@@ -267,6 +277,22 @@ SLIP_info SLIP_LU_factorize
                 // Increment lnz
                 lnz++;
             }
+        }
+
+        // progress: per-column carriage-return + group summary
+        if ((k + 1) % PROGRESS_GROUP == 0 || k + 1 == n)
+        {
+            clock_t now = clock();
+            size_t pivot_bits = 0;
+            SLIP_mpz_sizeinbase(&pivot_bits, rhos->x.mpz[k], 2);
+            fprintf(stderr,
+                "[SLIP_LU_factorize] k=%"PRId64"/%"PRId64
+                " lnz=%"PRId64" unz=%"PRId64
+                " pivot_bits=%zu group_dt=%.3fs total=%.3fs\n",
+                k + 1, n, lnz, unz, pivot_bits,
+                (double)(now - t_group) / CLOCKS_PER_SEC,
+                (double)(now - t_factor_start) / CLOCKS_PER_SEC);
+            t_group = now;
         }
     }
 
