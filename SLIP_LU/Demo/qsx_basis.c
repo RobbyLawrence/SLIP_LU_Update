@@ -331,7 +331,7 @@ static void derive_names(const char *basis_path, char *prob, size_t prob_sz,
     char *ktag, size_t ktag_sz)
 {
     snprintf(prob, prob_sz, "unknown");
-    snprintf(ktag, ktag_sz, "");
+    snprintf(ktag, ktag_sz, " ");
 
     // parent directory: everything before the last '/'
     const char *slash = strrchr(basis_path, '/');

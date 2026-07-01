@@ -29,31 +29,45 @@ LDLIBS += -lm -lgmp -lmpfr -lcolamd -lamd -lsliplu
 CS = $(LDLIBS)
 
 
-all: lib example example2 SLIPLU qsx_basis update_demo
-	- ./example
-	- ./example2
-	- ./SLIPLU
+# Build all demo programs.  Nothing is run automatically; invoke a program
+# (e.g. ./perm) by hand once it is built.
+all: example example2 SLIPLU qsx_basis update_demo perm
 
 lib:
 	( cd ../Lib ; $(MAKE) )
 
-example: lib example.c Makefile
-	$(CC) $(LDFLAGS) $(CF) $(I) -o example example.c $(CS)
+# Compile a source file into an object file.  Only sources whose .c (or the
+# headers/Makefile they depend on) changed are recompiled.
+%.o: %.c Makefile
+	$(CC) $(CF) $(I) -c $< -o $@
 
-example2: lib example2.c Makefile
-	$(CC) $(LDFLAGS) $(CF) $(I) -o example2 example2.c demos.c $(CS)
+# Header dependencies: recompile the affected objects when a header changes.
+demos.o example2.o SLIPLU.o qsx_basis.o update_demo.o perm.o ordering_ab.o: demos.h
+slip_lu_update.o update_demo.o: slip_lu_update.h
 
-SLIPLU: lib SLIPLU.c demos.h demos.c Makefile
-	$(CC) $(LDFLAGS) $(CF) $(I) -o SLIPLU SLIPLU.c demos.c $(CS)
+# Link the demo programs from their objects.  'lib' is an order-only
+# prerequisite (after the '|') so the library is kept up to date without
+# forcing the programs to relink on every invocation.
+example: example.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ example.o $(CS)
 
-qsx_basis: lib qsx_basis.c demos.h demos.c Makefile
-	$(CC) $(LDFLAGS) $(CF) $(I) -o qsx_basis qsx_basis.c demos.c $(CS)
+example2: example2.o demos.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ example2.o demos.o $(CS)
 
-update_demo: lib update_demo.c slip_lu_update.c slip_lu_update.h demos.h demos.c Makefile
-	$(CC) $(LDFLAGS) $(CF) $(I) -o update_demo update_demo.c slip_lu_update.c demos.c $(CS)
+SLIPLU: SLIPLU.o demos.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ SLIPLU.o demos.o $(CS)
 
-ordering_ab: lib ordering_ab.c demos.h demos.c Makefile
-	$(CC) $(LDFLAGS) $(CF) $(I) -o ordering_ab ordering_ab.c demos.c $(CS)
+qsx_basis: qsx_basis.o demos.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ qsx_basis.o demos.o $(CS)
+
+update_demo: update_demo.o slip_lu_update.o demos.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ update_demo.o slip_lu_update.o demos.o $(CS)
+
+perm: perm.o demos.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ perm.o demos.o $(CS)
+
+ordering_ab: ordering_ab.o demos.o | lib
+	$(CC) $(LDFLAGS) $(CF) -o $@ ordering_ab.o demos.o $(CS)
 
 clean:
 	- $(RM) *.o
@@ -61,4 +75,6 @@ clean:
 purge: distclean
 
 distclean: clean
-	- $(RM) -r example example2 example3 example4 example5 SLIPLU qsx_basis *.a *.dSYM *.obj *.dll
+	- $(RM) -r example example2 example3 example4 example5 SLIPLU qsx_basis update_demo perm ordering_ab *.a *.dSYM *.obj *.dll
+
+.PHONY: default all lib clean purge distclean
