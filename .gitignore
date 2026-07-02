@@ -229,8 +229,9 @@ SLIP_LU/Demo/example.exe
 SLIP_LU/Demo/SLIPLU.exe
 SLIP_LU/Demo/example2.exe
 
-.cache/*
-SLIP_LU/Demo/sol*
+.cache
+
+compile_commands.json
 
 # Do not ignore this file
 !.gitignore
