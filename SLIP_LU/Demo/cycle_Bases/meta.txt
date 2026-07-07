@@ -1,6 +1,6 @@
 problem: cycle
-source_file: /Users/robertlawrence/qsopt-ex/Problems/cycle.mps
+source_file: ../Problems/cycle.mps
 nrows: 1903
 ncols_total: 4760
 nstruct: 2857
-total_snapshots_captured: 655
+total_snapshots_captured: 643
