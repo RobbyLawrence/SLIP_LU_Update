@@ -10,102 +10,29 @@
 // Grids larger than this are elided (QSOpt_ex bases can be ~2000x2000).
 #define PRINT_MAX_N 20
 
-// The rational L*D^(-1)*U reconstruction is O(n^3) mpq work; it is skipped
-// for matrices bigger than this, leaving the entrywise factor comparison
-// with the from-scratch refactorization as the correctness test.
+// The rational L*D^(-1)*U reconstruction is O(n^3) mpq work; skip it above
+// this size (the entrywise factor comparison remains the correctness test).
 #define RECON_MAX_N 200
 
-/* This program reads a sparse matrix stored in triplet format, factors it with
- * SLIP LU (PAQ = L*D^(-1)*U), and then demonstrates the Adjacent-Column Push
- * Update (APCPU): given the factors of PAQ, update them to the factors of
- * PAQ' -- PAQ with two ADJACENT columns k and k+1 swapped -- without
- * refactorizing from scratch.
- *
- *   1. Factor A "normally" (COLAMD column ordering + tolerance pivoting) to
- *      obtain the column ordering Q and the row permutation P.
- *   2. Form the matrix that SLIP actually factors, PAQ, explicitly.
- *   3. Ask the user for the swap position k (1 <= k <= n-1); swap columns
- *      k and k+1 of PAQ.
- *   4. Run the SPARSE APCPU directly on the CSC factors: the back-solve
- *      trick derives the new L column k and U row k+1 purely from stored
- *      entries (one inverted IPGE step), so the update never reads PAQ and
- *      costs O(nnz of the affected rows/columns), independent of k.
- *   5. Run the dense APCPU as well (when the dense workspace fits) and
- *      cross-check the two implementations entry by entry.
- *   6. Verify: (a) reconstruct L'*D'^(-1)*U' and compare with the swapped
- *      PAQ; (b) re-factor the swapped PAQ from scratch (identity Q, diagonal
- *      pivoting) and compare the factors entrywise -- the sparse-vs-scratch
- *      comparison runs at any size.
- *
+#define USE_COLAMD 1
+/*
  * Usage:
  *      perm [-Q] [-D] [matrix_file [k]]
- *      perm -B [-Q] matrix_file [k m]
  *      perm -R [-Q] [matrix_file [col]]
  *
- * With -D the demo performs the adjacent DIAGONAL push (APDPU) instead: the
- * symmetric permutation PAQ' = E*PAQ*E swapping both columns AND rows k,
- * k+1.  The factors are updated by the sparse and dense APDPU (closed-form
- * corner + stored-value swaps + four IPGE strips, no sign flips), with the
- * same cross-checks and from-scratch verification as the column push.
- *
- * With -B the demo runs the DISTANT diagonal push benchmark instead of the
- * single-swap workflow: the row/column at position k of PAQ is moved to
- * position m (a symmetric cyclic rotation of the positions in between) by a
- * chain of |m - k| adjacent diagonal pushes, and the chained update is timed
- * against a full refactorization of the permuted matrix (fresh COLAMD
- * analysis + factorization -- what a solver without the update would run).
- * With k and m on the command line a single push is benchmarked; otherwise a
- * sweep over distances d = 1, 2, 4, ... plus the two full-length pushes
- * 1 -> n and n -> 1 is run, and the results are printed as a table
- * comparing time and nnz.  Every trial is verified exactly (see bench_push).
- *
- * With -R the demo performs a COLUMN REPLACEMENT (the simplex basis
- * exchange): it reads a basis (default: cycle_Bases/basis_k0_B.txt), asks
- * which column to replace (or takes it on the command line), replaces that
- * column with a DENSE deterministic pseudorandom column, and updates the
- * factorization by the exact Forrest-Tomlin analogue -- a MIXED distant
- * push of the leaving position to the end (a diagonal push at every step,
- * except that where its pivot vanishes the step becomes a COLUMN push,
- * whose pivot -- the upper support U(j,j+1) -- is then provably nonzero:
- * one of the two is ALWAYS feasible on a nonsingular basis, so the chain
- * never dies on a zero pivot) followed by one REF forward solve for the
- * new last column of U -- timed against a full refactorization of the new
- * basis, with the same exactness verification as -B (see bench_replace).
- *
- * If no matrix file is given on the command line, the matrix is read from
- * "../ExampleMats/test_mat2.txt".  If k is given as the last argument it is
- * used as the swap position; otherwise the program prompts for it.
- *
- * With -Q the matrix file is a basis snapshot emitted by QSOpt_ex (see e.g.
- * cycle_Bases/basis_k0_B.txt and co9_Bases/): a rational matrix stored
- * either as 0-indexed triplets with integer-or-"p/q" values (the current
- * emitter, cycle_Bases/) or as a header, per-row denominators, and integer
- * triplets (the older emitter, 50v-10_LP_Bases/ and co9_Bases/); the two
- * are told apart automatically (see read_qsx_basis and the format sniffer
- * in main).  Either way the basis is converted to SLIP's CSC MPZ form by
- * multiplying every entry by one integer scalar (the LCM of the
- * denominators, recorded in A->scale) and the same workflow is run on it.  Since these bases are large (~2000x2000), the
- * dense grids are only printed for matrices up to 20-by-20, and the O(n^3)
- * rational reconstruction checks are skipped above n = 200 -- the entrywise
- * comparison with the from-scratch refactorization remains the correctness
- * test at any size.
+ * Default matrix file: ../ExampleMats/test_mat2.txt.  If k is not given on
+ * the command line, the program prompts for it.
  */
 
 //------------------------------------------------------------------------------
 // printing / swapping / comparison helpers
 //------------------------------------------------------------------------------
 
-// Forward declaration: defined below near reconstruct(); used by the
-// verification blocks in bench_push and bench_replace, which sit above it.
 static SLIP_info probe_LDU_eq_M_csc (bool *ok, const SLIP_matrix *L,
     const SLIP_matrix *U, const SLIP_matrix *rhos, const SLIP_matrix *M,
     uint64_t seed, const SLIP_options *option);
 
-/* Print a dense SLIP_MPZ matrix as a 2D grid (rows down, columns across),
- * right-aligning every entry to the width of the widest entry so the columns
- * line up.  The dense matrix stores A(i,j) at A->x.mpz[i + j*A->m], which the
- * SLIP_2D macro accesses for us.
- */
+/* Print a dense SLIP_MPZ matrix as a 2D grid. */
 static void print_dense_grid (const char *name, const SLIP_matrix *M)
 {
     int64_t m = M->m, n = M->n;
@@ -135,8 +62,7 @@ static void print_dense_gated (const char *name, const SLIP_matrix *M)
 {
     if (M->m > PRINT_MAX_N || M->n > PRINT_MAX_N)
     {
-        printf ("\n%s (%"PRId64"-by-%"PRId64"): not printed (larger than "
-            "%d-by-%d)\n", name, M->m, M->n, PRINT_MAX_N, PRINT_MAX_N);
+        printf ("\n%s (%"PRId64"-by-%"PRId64"): not printed, too big\n", name, M->m, M->n);
         return;
     }
     print_dense_grid (name, M);
@@ -173,10 +99,8 @@ static bool equal_dense (const SLIP_matrix *X, const SLIP_matrix *Y)
     return true;
 }
 
-/* Entrywise equality of two CSC MPZ matrices as mathematical objects:
- * explicit zeros and the ordering of row indices within a column are
- * ignored.  Uses an O(m) scatter workspace.
- */
+/* Entrywise equality of two CSC MPZ matrices as mathematical objects
+ * (explicit zeros and row-index order within a column are ignored). */
 static bool csc_equal (const SLIP_matrix *X, const SLIP_matrix *Y)
 {
     if (X->m != Y->m || X->n != Y->n) return false;
@@ -214,11 +138,8 @@ static bool csc_equal (const SLIP_matrix *X, const SLIP_matrix *Y)
     return eq;
 }
 
-/* Prompt the user for the swap position k, 1-based, 1 <= k <= n-1, meaning
- * "swap columns k and k+1 of PAQ".  Returns k-1 (the 0-based index of the
- * left column of the pair), or -1 on invalid input.  The prompt is written to
- * stderr so it does not pollute the matrices printed to stdout.
- */
+/* Prompt for the swap position k (1-based, "swap columns k and k+1 of
+ * PAQ").  Returns k-1, or -1 on invalid input. */
 static int64_t ask_k (int64_t n)
 {
     long k = 0;
@@ -252,37 +173,23 @@ static int64_t ask_col (int64_t n)
 // QSOpt_ex basis reader
 //------------------------------------------------------------------------------
 
-/* Read a basis matrix emitted by QSOpt_ex and convert it to the CSC MPZ
- * form SLIP LU expects.  Two on-disk layouts are supported, distinguished
- * by the 'rational' flag (set by the format sniffer in main):
+/* Read a basis matrix emitted by QSOpt_ex (cycle_Bases/) and convert it to
+ * the CSC MPZ form SLIP LU expects.  On-disk layout:
  *
- *  OLD (row-scaled; 50v-10_LP_Bases/, co9_Bases/):
- *      nrows ncols nnz         (ncols == nrows for a basis)
- *      L_0 ... L_{nrows-1}     one per line: row-wise denominator LCMs
- *      row col int_val         repeated nnz times, 0-indexed; the true
- *                              entry is B[row,col] = int_val / L_row
- *
- *  NEW (rational triplets; cycle_Bases/):
  *      nrows ncols nnz
  *      row col val             repeated nnz times, 0-indexed; val is an
  *                              integer or a rational "p/q" (no spaces)
  *
- * Either way the entries are assembled as exact rationals in a triplet
- * matrix, then SLIP_matrix_copy converts to CSC MPZ by multiplying every
- * entry by ONE integer scalar -- the LCM of all the denominators (see
- * slip_expand_mpq_array) -- and recording it in A->scale.  Scaling the
- * whole matrix by a scalar is harmless here: the workflow factors the
- * resulting integer matrix, and a basis solve only needs the scale factor
- * folded back at the end (as SLIP_LU_solve does).
+ * The entries are assembled as exact rationals in a triplet matrix;
+ * SLIP_matrix_copy then converts to CSC MPZ by scaling every entry by the
+ * LCM of the denominators, recorded in A->scale (a basis solve folds the
+ * scale back at the end, as SLIP_LU_solve does).
  */
 static SLIP_info read_qsx_basis (SLIP_matrix **A_handle, FILE *file,
-    bool rational, SLIP_options *option)
+    SLIP_options *option)
 {
     SLIP_info info = SLIP_OK;
     SLIP_matrix *T = NULL;      // triplet MPQ assembly of the basis
-    mpz_t *Lrow = NULL;         // per-row denominators (old layout only)
-    mpz_t num;                  // triplet numerator scratch
-    bool num_init = false;
     int64_t m = 0, n, nnz;
 
     *A_handle = NULL;
@@ -296,65 +203,24 @@ static SLIP_info read_qsx_basis (SLIP_matrix **A_handle, FILE *file,
         return SLIP_INCORRECT_INPUT;
     }
 
-    mpz_init (num);
-    num_init = true;
-
-    if (!rational)
-    {
-        Lrow = (mpz_t *) SLIP_calloc ((size_t) m, sizeof (mpz_t));
-        if (Lrow == NULL) { info = SLIP_OUT_OF_MEMORY; goto done; }
-        for (int64_t i = 0; i < m; i++) mpz_init (Lrow[i]);
-
-        for (int64_t i = 0; i < m; i++)
-        {
-            if (gmp_fscanf (file, "%Zd", Lrow[i]) != 1
-                || mpz_sgn (Lrow[i]) <= 0)
-            {
-                fprintf (stderr, "bad QSOpt_ex row denominator %"PRId64"\n",
-                    i);
-                info = SLIP_INCORRECT_INPUT;
-                goto done;
-            }
-        }
-    }
-
     QCK (SLIP_matrix_allocate (&T, SLIP_TRIPLET, SLIP_MPQ, m, n, nnz,
         false, true, option));
     for (int64_t k = 0; k < nnz; k++)
     {
         int64_t row, col;
-        if (rational)
+        // %Qd accepts both "p" and "p/q"; it does not canonicalize
+        if (gmp_fscanf (file, "%"PRId64" %"PRId64" %Qd", &row, &col,
+                T->x.mpq[k]) != 3
+            || row < 0 || row >= m || col < 0 || col >= n
+            || mpz_sgn (mpq_denref (T->x.mpq[k])) <= 0)
         {
-            // %Qd accepts both "p" and "p/q"; it does not canonicalize
-            if (gmp_fscanf (file, "%"PRId64" %"PRId64" %Qd", &row, &col,
-                    T->x.mpq[k]) != 3
-                || row < 0 || row >= m || col < 0 || col >= n
-                || mpz_sgn (mpq_denref (T->x.mpq[k])) <= 0)
-            {
-                fprintf (stderr, "bad QSOpt_ex triplet %"PRId64"\n", k);
-                info = SLIP_INCORRECT_INPUT;
-                goto done;
-            }
-            T->i[k] = row;
-            T->j[k] = col;
-            mpq_canonicalize (T->x.mpq[k]);
+            fprintf (stderr, "bad QSOpt_ex triplet %"PRId64"\n", k);
+            info = SLIP_INCORRECT_INPUT;
+            goto done;
         }
-        else
-        {
-            if (gmp_fscanf (file, "%"PRId64" %"PRId64" %Zd", &row, &col,
-                    num) != 3
-                || row < 0 || row >= m || col < 0 || col >= n)
-            {
-                fprintf (stderr, "bad QSOpt_ex triplet %"PRId64"\n", k);
-                info = SLIP_INCORRECT_INPUT;
-                goto done;
-            }
-            T->i[k] = row;
-            T->j[k] = col;
-            mpq_set_num (T->x.mpq[k], num);
-            mpq_set_den (T->x.mpq[k], Lrow[row]);
-            mpq_canonicalize (T->x.mpq[k]);
-        }
+        T->i[k] = row;
+        T->j[k] = col;
+        mpq_canonicalize (T->x.mpq[k]);
     }
     T->nz = nnz;
 
@@ -362,12 +228,6 @@ static SLIP_info read_qsx_basis (SLIP_matrix **A_handle, FILE *file,
 
 done:
     SLIP_matrix_free (&T, option);
-    if (Lrow != NULL)
-    {
-        for (int64_t i = 0; i < m; i++) mpz_clear (Lrow[i]);
-        SLIP_FREE (Lrow);
-    }
-    if (num_init) mpz_clear (num);
     #undef QCK
     return info;
 }
@@ -376,21 +236,13 @@ done:
 // D construction helper
 //------------------------------------------------------------------------------
 
-/* Build the diagonal matrix D from the pivot sequence rhos.  D is all zeros
- * except on the diagonal, where D(k,k) is the product of consecutive pivots:
+/* Build the diagonal matrix D of PAQ = L * D^(-1) * U from the pivots:
+ * D(k,k) = rhos[k-1] * rhos[k], with rhos[-1] = 1.
  *
- *      D(k,k) = rhos[k-1] * rhos[k],   with the convention rhos[-1] = 1.
- *
- * So D(0,0) = rhos[0], D(1,1) = rhos[0]*rhos[1], D(2,2) = rhos[1]*rhos[2], ...
- * These are the pivots that make PAQ = L * D^(-1) * U.  On success *D_handle
- * points to a freshly allocated n-by-n dense MPZ matrix.
- *
- * When a 2x2 block pivot was used at positions {kb, kb+1} (kb >= 0; see
- * apdpu), D is block diagonal there instead: its 2x2 block is
- * rhos[kb-1] * B', where B' is the block the update stored in rows/columns
- * {kb, kb+1} of the factors (read here from the dense factor Lb).  This
- * generalizes the scalar D(k,k) = rhos[k-1] * B with B = [rhos[k]].  Pass
- * kb = -1 (Lb ignored) for the ordinary all-scalar D.
+ * If a 2x2 block pivot was used at positions {kb, kb+1} (kb >= 0; see
+ * apdpu), D is block diagonal there: the 2x2 block is rhos[kb-1] * B',
+ * where B' is the block stored in rows/columns {kb, kb+1} of the dense
+ * factor Lb.  Pass kb = -1 (Lb ignored) for the all-scalar D.
  */
 static SLIP_info build_D (SLIP_matrix **D_handle, const SLIP_matrix *rhos,
     int64_t n, int64_t kb, const SLIP_matrix *Lb, const SLIP_options *option)
@@ -446,68 +298,36 @@ static SLIP_info build_D (SLIP_matrix **D_handle, const SLIP_matrix *rhos,
 // APCPU: adjacent-column push update
 //------------------------------------------------------------------------------
 
-/* Update the REF/SLIP factors after swapping ADJACENT columns kc and kc+1
- * (0-based) of the factored matrix.
+/* Update the dense REF/SLIP factors of PAQ = L * D^(-1) * U after swapping
+ * ADJACENT columns kc and kc+1 (0-based).  PAQ_new is PAQ with the columns
+ * already swapped; the outputs are freshly allocated factors of PAQ_new
+ * (the caller rebuilds D from *rhos_out with build_D).
  *
- * Input:  L, U, rhos -- dense factors of PAQ = L * D^(-1) * U, where
- *                       L(j,j) = U(j,j) = rhos[j] and D(j,j) =
- *                       rhos[j-1]*rhos[j] with rhos[-1] = 1.
- *         PAQ_new    -- PAQ with columns kc and kc+1 ALREADY swapped.
- * Output: *L_out, *U_out, *rhos_out -- freshly allocated dense factors of
- *         PAQ_new (the caller rebuilds D from *rhos_out with build_D).
+ * Every stored entry is a minor of PAQ: with M(R,C) = det of the submatrix
+ * with rows R and columns C in increasing order,
  *
- * Everything in the factors is a subdeterminant (minor) of PAQ (Bareiss/IPGE):
- * with 0-based index sets and M(R,C) = det of the submatrix with rows R and
- * columns C in increasing order,
- *
- *      rhos[j] = M({0..j},   {0..j})            (leading (j+1)-minor)
+ *      rhos[j] = M({0..j},   {0..j})
  *      L[i,j]  = M({0..j-1, i}, {0..j})         for i >= j
  *      U[i,j]  = M({0..i},   {0..i-1, j})       for j >= i
  *
- * Swapping columns kc and kc+1 changes a minor only if its column set touches
- * the pair, and only its ORDER changes if the set contains both.  Hence:
- *
- *   pivots:  rhos'[j] = rhos[j]                       j <  kc     (untouched)
- *            rhos'[kc] = M({0..kc}, {0..kc-1, kc+1})  = new pivot, obtained
- *                        from a REF forward solve of PAQ_new(:,kc)
- *            rhos'[j] = -rhos[j]                      j >= kc+1   (both cols in
- *                        the leading set, transposed => sign flip).  Note the
- *                        flip applies to ALL j >= kc+1, so D'(j,j) =
- *                        rhos'[j-1]*rhos'[j] = D(j,j) for j >= kc+2.
- *
- *   L:  cols j < kc untouched.  Col kc is the "data" column: L'(i,kc) =
- *       M({0..kc-1, i}, {0..kc-1, kc+1}) = PAQ_new(:,kc) pushed through the
- *       first kc IPGE steps (REF forward solve; those steps use only the
- *       untouched L cols 0..kc-1 and pivots rhos[0..kc-1]).  Cols j >= kc+1:
- *       column set contains both swapped columns => sign flip, INCLUDING the
- *       diagonal (L'(j,j) = rhos'[j] = -rhos[j]).
- *
- *   U:  rows i < kc: the entries in cols kc and kc+1 trade places --
- *       U'(i,kc) = M({0..i},{0..i-1, kc+1}) = old U(i,kc+1) (= x[i] from the
- *       same forward solve) and U'(i,kc+1) = old U(i,kc); all other entries
- *       untouched.  Row kc: U'(kc,kc) = rhos'[kc]; U'(kc,kc+1) =
- *       M({0..kc},{0..kc}) = old rhos[kc]; U'(kc,j) untouched for j >= kc+2.
- *       Row kc+1: recomputed (the O(n-kc) strip, see below); diagonal =
- *       rhos'[kc+1] = -rhos[kc+1].  Rows i >= kc+2: sign flip (incl. diag).
- *
- * The row-(kc+1) strip: for j >= kc+2 the target U'(kc+1,j) =
- * M({0..kc+1}, {0..kc-1, kc+1, j}).  Sylvester's determinant identity with
- * inner minor rows/cols {0..kc-1}, extra rows {kc, kc+1}, extra cols
- * {kc+1, j} gives
+ * The swap changes a minor only if its column set touches the pair, and
+ * only its ORDER (a sign flip) if it contains both.  Hence: pivots and L
+ * columns j >= kc+1 and U rows i >= kc+2 flip sign (diagonals included);
+ * U entries (i,kc) and (i,kc+1) trade places for i <= kc; the new pivot
+ * rhos'[kc] and the new L column kc come from one REF forward solve of
+ * PAQ_new(:,kc) through pivots 0..kc-1; and U row kc+1 for j >= kc+2 is
+ * recomputed via Sylvester's identity
  *
  *      U'(kc+1,j) = ( rhos'[kc] * xint - L'(kc+1,kc) * U(kc,j) ) / rhos[kc-1]
  *
- * where xint = M({0..kc-1, kc+1}, {0..kc-1, j}) is the step-(kc-1) IPGE value
- * of the ORIGINAL matrix at (kc+1, j).  It is not stored (old U(kc+1,j) holds
- * the step-kc value) but is recovered exactly by inverting the original
- * step-kc IPGE update:
+ * where xint, the step-(kc-1) IPGE value of the ORIGINAL matrix at
+ * (kc+1, j), is recovered by inverting the original step-kc IPGE update:
  *
  *      xint = ( rhos[kc-1] * U(kc+1,j) + L(kc+1,kc) * U(kc,j) ) / rhos[kc]
  *
- * Both divisions are exact (every quotient is itself a minor).
- *
- * Fails with SLIP_SINGULAR if the new pivot rhos'[kc] is zero (the swapped
- * matrix then has no REF LU factorization with this row permutation).
+ * All divisions are exact (every quotient is itself a minor).  Fails with
+ * SLIP_SINGULAR if rhos'[kc] = 0 (the swapped matrix has no REF LU with
+ * this row permutation).
  */
 static SLIP_info apcpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
     SLIP_matrix **rhos_out, SLIP_matrix *L, SLIP_matrix *U,
@@ -536,12 +356,8 @@ static SLIP_info apcpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
     mpz_t *t1 = &SLIP_1D (tmp, 0, mpz);
     mpz_t *t2 = &SLIP_1D (tmp, 1, mpz);
 
-    //--------------------------------------------------------------------------
-    // Steps 1 & 2: REF forward solve of PAQ_new(:,kc) through pivots
-    // 0..kc-1.  Afterwards x[i] = U'(i,kc) for i < kc, x[kc] = rhos'[kc],
-    // and x[i] = L'(i,kc) for i > kc.
-    //--------------------------------------------------------------------------
-
+    // Steps 1-2: REF forward solve of PAQ_new(:,kc) through pivots 0..kc-1:
+    // x[i] = U'(i,kc) for i < kc, x[kc] = rhos'[kc], x[i] = L'(i,kc) after.
     for (int64_t i = 0; i < n; i++)
     {
         ACK (SLIP_mpz_set (SLIP_1D (x, i, mpz), SLIP_2D (PAQ_new, i, kc, mpz)));
@@ -586,12 +402,8 @@ static SLIP_info apcpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
         ACK (SLIP_mpz_set (SLIP_2D (Lp, i, kc, mpz), SLIP_1D (x, i, mpz)));
     }
 
-    //--------------------------------------------------------------------------
-    // Step 3: column kc+1 of U in rows 0..kc gets the OLD column kc entries
-    // (U'(i,kc+1) = old U(i,kc); in particular U'(kc,kc+1) = old pivot
-    // rhos[kc]), and the diagonal U'(kc,kc) becomes the new pivot.
-    //--------------------------------------------------------------------------
-
+    // Step 3: U'(i,kc+1) = old U(i,kc) for i <= kc (in particular
+    // U'(kc,kc+1) = old pivot); the diagonal U'(kc,kc) becomes the new pivot.
     for (int64_t i = 0; i <= kc; i++)
     {
         ACK (SLIP_mpz_set (SLIP_2D (Up, i, kc+1, mpz), SLIP_2D (U, i, kc, mpz)));
@@ -599,13 +411,8 @@ static SLIP_info apcpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
     ACK (SLIP_mpz_set (SLIP_2D (Up, kc, kc, mpz), rp->x.mpz[kc]));
     // U'(kc, j) for j >= kc+2 is untouched (already in the copy)
 
-    //--------------------------------------------------------------------------
-    // Step 4: sign flips on the trailing block -- every stored entry whose
-    // defining column set contains BOTH swapped columns.  For L that is
-    // every column j >= kc+1 (diagonal included); for U every row
-    // i >= kc+2 (diagonal included).  Row kc+1 of U is rebuilt in Step 5.
-    //--------------------------------------------------------------------------
-
+    // Step 4: sign flips -- L columns j >= kc+1 and U rows i >= kc+2,
+    // diagonals included (row kc+1 of U is rebuilt in Step 5).
     for (int64_t j = kc + 1; j < n; j++)
     {
         for (int64_t i = j; i < n; i++)
@@ -621,11 +428,8 @@ static SLIP_info apcpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
         }
     }
 
-    //--------------------------------------------------------------------------
-    // Step 5: recompute row kc+1 of U for j >= kc+2 (the O(n-kc) strip) via
-    // the Sylvester identity described above; the diagonal is the new pivot.
-    //--------------------------------------------------------------------------
-
+    // Step 5: recompute U row kc+1 for j >= kc+2 via the Sylvester identity
+    // above; the diagonal is the new pivot.
     ACK (SLIP_mpz_set (SLIP_2D (Up, kc+1, kc+1, mpz), rp->x.mpz[kc+1]));
     for (int64_t j = kc + 2; j < n; j++)
     {
@@ -677,19 +481,14 @@ done:
 // APDPU: adjacent diagonal (symmetric) push update, dense
 //------------------------------------------------------------------------------
 
-/* Update the dense factors after the SYMMETRIC swap PAQ' = E*PAQ*E, where E
- * exchanges positions kc and kc+1 (0-based): both columns kc,kc+1 AND rows
- * kc,kc+1 of PAQ are swapped (the row swap is exactly a column push applied
- * to the transpose).
+/* Update the dense factors after the SYMMETRIC swap PAQ' = E*PAQ*E, E
+ * exchanging positions kc and kc+1 (both columns AND rows swapped).
  *
- * With M(R,C) as in apcpu above, the symmetric swap gives
- * M'(R,C) = s(R)*s(C)*M(sigma R, sigma C), s(X) = -1 iff {kc,kc+1} in X.
- * Unlike the one-sided column push there are NO sign flips: wherever both
- * indices sit in R and C the two signs cancel (the trailing block
- * i,j >= kc+2 is fully invariant), and wherever exactly one appears the
- * minor maps to another minor -- either one already stored (the corner
- * block and the row/column swaps below) or one recoverable with a single
- * exact division (the four strips).  PAQ itself is never consulted:
+ * With M(R,C) as in apcpu, M'(R,C) = s(R)*s(C)*M(sigma R, sigma C) with
+ * s(X) = -1 iff {kc,kc+1} in X, so unlike the one-sided push there are NO
+ * sign flips (the signs cancel; the trailing block i,j >= kc+2 is
+ * invariant).  Every changed entry is stored or one exact division away;
+ * PAQ itself is never consulted:
  *
  *   pivot (Sylvester identity, also the O(1) feasibility test):
  *     rho'[kc] = ( rho[kc-1]*rho[kc+1] + L(kc+1,kc)*U(kc,kc+1) ) / rho[kc]
@@ -706,30 +505,27 @@ done:
  *     U'(kc,j)   = ( rho[kc-1]*U(kc+1,j) + L(kc+1,kc)*U(kc,j) ) / rho[kc]
  *     U'(kc+1,j) = ( rho'[kc]*U(kc,j) - U(kc,kc+1)*U'(kc,j) ) / rho[kc-1]
  *
- * rho[-1] = 1 and every division is exact (each quotient is a minor of
- * PAQ').  All other pivots are unchanged, so D changes only at positions
- * kc and kc+1 (the caller rebuilds it from rhos').
+ * rho[-1] = 1; every division is exact; D changes only at kc, kc+1.
  *
- * ZERO PIVOT => 2x2 BLOCK PIVOT FALLBACK.  rho'[kc] = 0 means the leading
- * (kc+1)-minor of PAQ' vanishes, so no scalar REF LU with this row order
- * exists (PAQ' itself is NOT singular: det PAQ' = +/- rho[n-1]).  If
- * used_block is non-NULL, positions kc and kc+1 are then eliminated
- * TOGETHER as a 2x2 block pivot (Bunch-Kaufman style), which cannot fail:
- * the block determinant is rho[kc-1]*rho[kc+1] != 0.  Rows/columns
- * {kc,kc+1} of the factors then hold step-(kc-1) values throughout:
+ * ZERO PIVOT => 2x2 BLOCK PIVOT FALLBACK.  rho'[kc] = 0 means no scalar
+ * REF LU with this row order exists (PAQ' itself is NOT singular).  If
+ * used_block is non-NULL, positions kc and kc+1 are eliminated TOGETHER as
+ * a 2x2 block pivot, which cannot fail (block det = rho[kc-1]*rho[kc+1]
+ * != 0); rows/columns {kc,kc+1} of the factors then hold step-(kc-1)
+ * values:
  *
  *   block (stored in BOTH L' and U', generalizing the scalar diagonal):
  *     B' = [ rho'[kc] (= 0)    old L(kc+1,kc) ]
  *          [ old U(kc,kc+1)    old rho[kc]    ]
- *   strips (i,j >= kc+2): the same backtracks as 6a/6c above, but NO
- *   forward IPGE step -- the partner strip is a verbatim copy:
+ *   strips (i,j >= kc+2): same backtracks, NO forward IPGE step; the
+ *   partner strip is a verbatim copy:
  *     L'(i,kc) = backtrack;   L'(i,kc+1) = old L(i,kc)
  *     U'(kc,j) = backtrack;   U'(kc+1,j) = old U(kc,j)
  *
  * rhos'[kc] stays 0 (the block marker), D' gets the 2x2 block
- * rho[kc-1]*B' (see build_D), and PAQ' = L' * D'^(-1) * U' still holds
- * with the true 2x2 inverse.  *used_block reports which form was built.
- * If used_block is NULL, a zero pivot fails with SLIP_SINGULAR as before.
+ * rho[kc-1]*B' (see build_D), and PAQ' = L' * D'^(-1) * U' still holds.
+ * *used_block reports which form was built; if used_block is NULL a zero
+ * pivot fails with SLIP_SINGULAR.
  */
 static SLIP_info apdpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
     SLIP_matrix **rhos_out, SLIP_matrix *L, SLIP_matrix *U,
@@ -754,10 +550,7 @@ static SLIP_info apdpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
         false, true, option));
     mpz_t *t1 = &SLIP_1D (tmp, 0, mpz);
 
-    //--------------------------------------------------------------------------
     // Step 1: new pivot rho'[kc] via Sylvester; all other pivots unchanged
-    //--------------------------------------------------------------------------
-
     if (kc > 0)
     {
         DCK (SLIP_mpz_mul (*t1, rhos->x.mpz[kc-1], rhos->x.mpz[kc+1]));
@@ -775,10 +568,7 @@ static SLIP_info apdpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
     if (blk && used_block == NULL) { info = SLIP_SINGULAR; goto done; }
     if (used_block != NULL) *used_block = blk;
 
-    //--------------------------------------------------------------------------
     // Step 3: corner block {kc,kc+1} x {kc,kc+1}, all from storage
-    //--------------------------------------------------------------------------
-
     DCK (SLIP_mpz_set (SLIP_2D (Lp, kc, kc, mpz), rp->x.mpz[kc]));
     DCK (SLIP_mpz_set (SLIP_2D (Up, kc, kc, mpz), rp->x.mpz[kc]));
     DCK (SLIP_mpz_set (SLIP_2D (Lp, kc+1, kc, mpz),
@@ -798,10 +588,7 @@ static SLIP_info apdpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
         DCK (SLIP_mpz_set (SLIP_2D (Up, kc+1, kc+1, mpz), rhos->x.mpz[kc]));
     }
 
-    //--------------------------------------------------------------------------
-    // Steps 4 & 5: stored-value swaps in the leading rows/columns
-    //--------------------------------------------------------------------------
-
+    // Steps 4-5: stored-value swaps in the leading rows/columns
     for (int64_t j = 0; j < kc; j++)        // rows kc,kc+1 of L, cols < kc
     {
         mpz_swap (SLIP_2D (Lp, kc, j, mpz), SLIP_2D (Lp, kc+1, j, mpz));
@@ -811,11 +598,8 @@ static SLIP_info apdpu (SLIP_matrix **L_out, SLIP_matrix **U_out,
         mpz_swap (SLIP_2D (Up, i, kc, mpz), SLIP_2D (Up, i, kc+1, mpz));
     }
 
-    //--------------------------------------------------------------------------
     // Step 6: the four strips (all reads from the ORIGINAL L, U except the
     // just-written backtrack values, so no ordering hazards)
-    //--------------------------------------------------------------------------
-
     for (int64_t i = kc + 2; i < n; i++)    // 6a/6b: columns kc, kc+1 of L
     {
         // 6a: backtrack -- L'(i,kc) = a^{kc-1}(i,kc+1) of the old matrix
@@ -913,17 +697,13 @@ done:
 // sparse APCPU: adjacent-column push update on the CSC factors
 //------------------------------------------------------------------------------
 
-/* Update the CSC factors of PAQ (as returned by SLIP_LU_factorize: L lower
- * CSC with column j holding rows i >= j, U upper CSC with column j holding
- * rows i <= j, both including the pivot diagonal, row indices in PAQ space)
- * to the factors of PAQ' with adjacent columns kc and kc+1 (0-based)
- * swapped.
+/* Update the CSC factors of PAQ (as returned by SLIP_LU_factorize) to the
+ * factors of PAQ' with adjacent columns kc and kc+1 (0-based) swapped.
  *
- * Same minor algebra as the dense apcpu() above, but the two "data" slices
- * are obtained with the BACK-SOLVE TRICK -- inverting one stored IPGE step
- * instead of replaying kc of them -- so the update touches only stored
- * entries of L, U, and rhos.  PAQ itself is never accessed, and the work is
- * O(nnz of the affected columns/rows), independent of kc:
+ * Same minor algebra as the dense apcpu(), but the two "data" slices come
+ * from the BACK-SOLVE TRICK -- inverting one stored IPGE step instead of
+ * replaying kc of them -- so only stored entries of L, U, rhos are touched
+ * (never PAQ) and the work is O(nnz of the affected columns/rows):
  *
  *   new L column kc (i >= kc+1; also gives the diagonal = rho'[kc]):
  *      L'(i,kc) = ( rho[kc-1]*L(i,kc+1) + L(i,kc)*U(kc,kc+1) ) / rho[kc]
@@ -931,15 +711,13 @@ done:
  *      xint       = ( rho[kc-1]*U(kc+1,j) + L(kc+1,kc)*U(kc,j) ) / rho[kc]
  *      U'(kc+1,j) = ( rho'[kc]*xint - L'(kc+1,kc)*U(kc,j) ) / rho[kc-1]
  *
- * Absent entries are zeros, rho[-1] = 1, and every division is exact (each
- * quotient is itself a minor of PAQ).  All other stored entries either move
- * (the two swapped columns of U in rows <= kc), flip sign (L columns
- * >= kc+1 and U rows >= kc+2, diagonals included), or are untouched.
+ * Absent entries are zeros, rho[-1] = 1, every division is exact.  All
+ * other stored entries move (the swapped U columns in rows <= kc), flip
+ * sign (L columns >= kc+1, U rows >= kc+2, diagonals included), or stay.
  *
- * The new factors can gain entries relative to the old pattern (fill-in in
- * L column kc and U row kc+1), so fresh matrices are allocated and returned
- * through L_out / U_out / rhos_out.  Fails with SLIP_SINGULAR if the new
- * pivot rho'[kc] = U(kc,kc+1) is absent or zero.
+ * Fill-in can appear in L column kc and U row kc+1, so fresh matrices are
+ * returned through L_out / U_out / rhos_out.  Fails with SLIP_SINGULAR if
+ * the new pivot rho'[kc] = U(kc,kc+1) is absent or zero.
  */
 static SLIP_info apcpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
     SLIP_matrix **rhos_out, SLIP_matrix *L, SLIP_matrix *U,
@@ -954,10 +732,6 @@ static SLIP_info apcpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
     if (kc < 0 || kc > n - 2) return SLIP_INCORRECT_INPUT;
 
     #define SCK(method) { info = (method); if (info != SLIP_OK) goto done; }
-
-    //--------------------------------------------------------------------------
-    // locate the stored entries the identities need
-    //--------------------------------------------------------------------------
 
     // uk_pos: position of U(kc,kc+1), the new pivot rho'[kc]
     int64_t uk_pos = -1;
@@ -976,10 +750,7 @@ static SLIP_info apcpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
         if (L->i[p] == kc + 1) { lk_old_pos = p; break; }
     }
 
-    //--------------------------------------------------------------------------
     // workspace and the new pivot sequence
-    //--------------------------------------------------------------------------
-
     w = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
     if (w == NULL) { info = SLIP_OUT_OF_MEMORY; goto done; }
     for (int64_t i = 0; i < n; i++) w[i] = -1;
@@ -996,10 +767,7 @@ static SLIP_info apcpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
         mpz_neg (rp->x.mpz[j], rhos->x.mpz[j]);
     }
 
-    //--------------------------------------------------------------------------
     // build the new L
-    //--------------------------------------------------------------------------
-
     // worst case: column kc grows by the pattern of column kc+1 plus 1
     SCK (SLIP_matrix_allocate (&Lp, SLIP_CSC, SLIP_MPZ, n, n,
         L->p[n] + (L->p[kc+2] - L->p[kc+1]) + 2, false, true, option));
@@ -1081,10 +849,7 @@ static SLIP_info apcpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
     }
     Lp->p[n] = lnz;
 
-    //--------------------------------------------------------------------------
     // build the new U
-    //--------------------------------------------------------------------------
-
     // worst case: one new row-(kc+1) entry in every column >= kc+2, plus the
     // new diagonal of column kc+1
     SCK (SLIP_matrix_allocate (&Up, SLIP_CSC, SLIP_MPZ, n, n,
@@ -1229,36 +994,30 @@ done:
 // sparse APDPU: adjacent diagonal (symmetric) push update on the CSC factors
 //------------------------------------------------------------------------------
 
-/* Sparse version of apdpu() above: update the CSC factors of PAQ (storage
- * conventions as in apcpu_sparse) to those of PAQ' = E*PAQ*E, E swapping
- * positions kc and kc+1 (0-based).  All values come from stored entries --
- * PAQ is never consulted -- via the identities documented at apdpu():
- * the Sylvester pivot formula, the closed-form corner block, the
- * stored-value swaps (pure row-index relabels / entry moves in CSC), and
- * the four strips (backtrack at rho[kc], then forward IPGE at rho'[kc]).
+/* Sparse version of apdpu(): update the CSC factors of PAQ to those of
+ * PAQ' = E*PAQ*E, E swapping positions kc and kc+1.  All values come from
+ * stored entries via the identities documented at apdpu(); PAQ is never
+ * consulted.
  *
  * Sparsity specifics:
- *  - L columns < kc: row indices kc and kc+1 are relabeled to each other
- *    (values untouched).  U columns < kc and both factors' trailing
- *    columns >= kc+2 (except U rows kc, kc+1) are copied verbatim.
+ *  - L columns < kc: row indices kc and kc+1 are relabeled to each other.
+ *    U columns < kc and trailing columns >= kc+2 (except U rows kc, kc+1)
+ *    are copied verbatim.
  *  - The new L column kc is built over the UNION of the old columns kc and
- *    kc+1 patterns (rows >= kc+2); entries in the union are stored even
- *    when a cancellation makes them zero, because the forward strip for
- *    column kc+1 must still visit that row (a row absent from the
- *    backtrack result can be nonzero in the forward result).
+ *    kc+1 patterns (rows >= kc+2); union entries are stored even when a
+ *    cancellation makes them zero, because the forward strip for column
+ *    kc+1 must still visit that row.
  *  - Fill-in can appear in L columns kc, kc+1 and U rows kc, kc+1, so
  *    fresh matrices are allocated and returned.
  *
- * rho'[kc] = 0 (detected in O(nnz of two columns), before anything is
- * built) triggers the 2x2 BLOCK PIVOT fallback documented at apdpu() when
- * used_block is non-NULL (SLIP_SINGULAR otherwise).  Sparse specifics of
- * the block form: the zero (kc,kc) "diagonal" is simply not stored; L
- * column kc+1 becomes B'(kc,kc+1) = old L(kc+1,kc), diagonal old rho[kc],
- * then the old column kc verbatim (no forward strip, so no fill-in there);
- * U column kc gains the below-diagonal entry B'(kc+1,kc) = old U(kc,kc+1);
- * and the trailing row kc+1 of U is the old row kc moved down.  Both
- * couplings are guaranteed present in the block case, since
- * L(kc+1,kc)*U(kc,kc+1) = -rho[kc-1]*rho[kc+1] != 0.
+ * rho'[kc] = 0 (detected before anything is built) triggers the 2x2 BLOCK
+ * PIVOT fallback documented at apdpu() when used_block is non-NULL
+ * (SLIP_SINGULAR otherwise).  Sparse specifics of the block form: the zero
+ * (kc,kc) "diagonal" is not stored; L column kc+1 = B'(kc,kc+1), diagonal
+ * old rho[kc], then the old column kc verbatim (no forward strip, no
+ * fill-in); U column kc gains B'(kc+1,kc) = old U(kc,kc+1); U's trailing
+ * row kc+1 is the old row kc moved down.  Both couplings are present in
+ * the block case: L(kc+1,kc)*U(kc,kc+1) = -rho[kc-1]*rho[kc+1] != 0.
  */
 static SLIP_info apdpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
     SLIP_matrix **rhos_out, SLIP_matrix *L, SLIP_matrix *U,
@@ -1275,10 +1034,7 @@ static SLIP_info apdpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
 
     #define PCK(method) { info = (method); if (info != SLIP_OK) goto done; }
 
-    //--------------------------------------------------------------------------
     // locate the stored couplings and compute the new pivot (Step 1)
-    //--------------------------------------------------------------------------
-
     int64_t uk_pos = -1;                    // U(kc,kc+1), -1 if zero
     for (int64_t p = U->p[kc+1]; p < U->p[kc+2]; p++)
     {
@@ -1324,10 +1080,7 @@ static SLIP_info apdpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
     // case rho'[kc] stays 0 as the block marker, and uk_pos/lk_pos >= 0 is
     // guaranteed (their product equals -rho[kc-1]*rho[kc+1] != 0)
 
-    //--------------------------------------------------------------------------
     // build the new L
-    //--------------------------------------------------------------------------
-
     PCK (SLIP_matrix_allocate (&Lp, SLIP_CSC, SLIP_MPZ, n, n,
         L->p[n] + (L->p[kc+2] - L->p[kc]) + 4, false, true, option));
 
@@ -1495,10 +1248,7 @@ static SLIP_info apdpu_sparse (SLIP_matrix **L_out, SLIP_matrix **U_out,
     }
     Lp->p[n] = lnz;
 
-    //--------------------------------------------------------------------------
     // build the new U
-    //--------------------------------------------------------------------------
-
     PCK (SLIP_matrix_allocate (&Up, SLIP_CSC, SLIP_MPZ, n, n,
         U->p[n] + 2 * (n - kc) + 4, false, true, option));
 
@@ -1699,31 +1449,24 @@ done:
 
 /* The distant push moves the row/column at position k of PAQ to position m
  * (a symmetric cyclic rotation of the positions in between) as a chain of
- * |m - k| adjacent diagonal pushes.  Rebuilding the CSC factors on every
- * push would pay O(nnz(L) + nnz(U)) per push just copying unchanged
- * entries; here the factors are held so that one push touches ONLY the
+ * |m - k| adjacent diagonal pushes, held so one push touches ONLY the
  * affected rows and columns:
  *
- *   - L is stored as one resizable sparse vector per COLUMN and U as one
- *     per ROW.  A push at position j physically rebuilds L columns j, j+1
- *     and U rows j, j+1 -- the only vectors whose VALUES change -- and
- *     leaves every other vector untouched.
- *   - The rest of the push is pure relabeling: rows j and j+1 of L swap
- *     inside the leading columns, and columns j and j+1 of U swap inside
- *     the leading rows.  Entry indices are therefore kept as STORED labels,
- *     with overlays mapping stored labels to current positions and back --
- *     one for the rows of L (rpos_*) and one for the columns of U
- *     (cpos_*).  A diagonal push swaps the pair in BOTH overlays, a column
- *     push (dyn_colpush_step below) only in the column overlay, each in
- *     O(1) instead of visiting every leading vector; the trailing vectors
- *     never contain rows/columns j, j+1, so the swap is vacuous there.
+ *   - L is one resizable sparse vector per COLUMN, U one per ROW.  A push
+ *     at position j physically rebuilds L columns j, j+1 and U rows j, j+1
+ *     -- the only vectors whose VALUES change.
+ *   - The rest is pure relabeling (rows j, j+1 of L swap inside the
+ *     leading columns; columns j, j+1 of U inside the leading rows), so
+ *     entry indices are kept as STORED labels with overlays mapping stored
+ *     labels to current positions and back: rpos_* for L's rows, cpos_*
+ *     for U's columns.  A diagonal push swaps the pair in BOTH overlays, a
+ *     column push (dyn_colpush_step) only in the column overlay -- O(1)
+ *     instead of visiting every leading vector.
  *
- * Per-push cost is O(nnz of L cols j, j+1 + nnz of U rows j, j+1) exact
- * arithmetic, independent of n and of the chain length.  The pivots rho[]
- * are indexed by current position and only rho[j] changes (the leading
- * (j+2)-minor is invariant under a symmetric interior swap), so no overlay
- * is needed for them.  Raw GMP calls are used throughout (they cannot fail
- * short of aborting on OOM), matching the existing raw-GMP usage here.
+ * Per-push cost is O(nnz of the four affected vectors), independent of n
+ * and chain length.  rho[] is indexed by current position and only rho[j]
+ * changes, so it needs no overlay.  Raw GMP calls are used throughout
+ * (they cannot fail short of aborting on OOM).
  */
 
 typedef struct
@@ -1954,10 +1697,7 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
 
     #define DPK(method) { info = (method); if (info != SLIP_OK) return info; }
 
-    //--------------------------------------------------------------------------
     // locate the stored couplings and compute the new pivot
-    //--------------------------------------------------------------------------
-
     int64_t pu = -1;                        // U(j,j+1), -1 if zero
     for (int64_t p = 0; p < Uj->nz; p++)
     {
@@ -1981,11 +1721,8 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
         // the block determinant -L(j+1,j)*U(j,j+1) = rho[j-1]*rho[j+1] != 0
     if (used_block != NULL) *used_block = blk;
 
-    //--------------------------------------------------------------------------
     // new L column j: diagonal rho' (omitted in block mode), corner
     // L'(j+1,j) = U(j,j+1), backtrack strip over the union pattern
-    //--------------------------------------------------------------------------
-
     nLj->nz = 0;
     DPK (dvec_reserve (nLj, Lj->nz + Lj1->nz + 2));
     if (!blk)
@@ -2034,10 +1771,7 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
         w[nLj->idx[p]] = -1;
     }
 
-    //--------------------------------------------------------------------------
     // new L column j+1: forward strip 6b, or the block-mode verbatim column
-    //--------------------------------------------------------------------------
-
     nLj1->nz = 0;
     if (blk)
     {
@@ -2108,11 +1842,8 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
     }
     nLj->nz = q;
 
-    //--------------------------------------------------------------------------
     // new U row j: diagonal rho' (omitted in block mode), corner
     // U'(j,j+1) = L(j+1,j), backtrack strip 6c over the union pattern
-    //--------------------------------------------------------------------------
-
     nUj->nz = 0;
     DPK (dvec_reserve (nUj, Uj->nz + Uj1->nz + 2));
     if (!blk)
@@ -2161,10 +1892,7 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
         w[nUj->idx[p]] = -1;
     }
 
-    //--------------------------------------------------------------------------
     // new U row j+1: forward strip 6d, or the block-mode verbatim row
-    //--------------------------------------------------------------------------
-
     nUj1->nz = 0;
     if (blk)
     {
@@ -2234,10 +1962,7 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
     }
     nUj->nz = q;
 
-    //--------------------------------------------------------------------------
     // commit: swap in the rebuilt vectors, update the pivot and the overlay
-    //--------------------------------------------------------------------------
-
     dvec_swap (Lj, nLj);
     dvec_swap (Lj1, nLj1);
     dvec_swap (Uj, nUj);
@@ -2257,56 +1982,40 @@ static SLIP_info dyn_push_step (dyn_chain *C, int64_t j, bool allow_block,
 }
 
 /* One adjacent COLUMN push at current position j, in place: the matrix
- * columns at positions j and j+1 are exchanged and the rows stay put --
+ * columns at positions j and j+1 are exchanged, rows stay put --
  * apcpu_sparse restated on the dynamic storage.  Sets *did = false and
- * changes nothing if the upper support U(j,j+1) is zero (the swapped matrix
- * then has no REF LU with this row order); the caller falls back to the
- * diagonal push, whose pivot rho[j-1]*rho[j+1]/rho[j] is then guaranteed
- * nonzero (Sylvester with a vanishing cross term).  Together the two steps
- * make a rightward chain that CANNOT be blocked on a nonsingular matrix.
+ * changes nothing if the upper support U(j,j+1) is zero (no REF LU with
+ * this row order); the caller falls back to the diagonal push, whose pivot
+ * rho[j-1]*rho[j+1]/rho[j] is then guaranteed nonzero, so the mixed chain
+ * CANNOT be blocked on a nonsingular matrix.
  *
- * DEFERRED TRANSPOSITION SIGNS.  A column swap flips the sign of every
- * minor whose column set contains both swapped columns: L columns >= j+1,
- * U rows >= j+2, and rho[j+1..] -- the whole trailing region, which an
- * in-place chain cannot afford to visit.  The flips are therefore left
- * PENDING in the stored values, and the chain driver settles them once at
- * the end (see distant_push_inplace).  The bookkeeping is one global
- * parity: with e = (-1)^(column pushes performed so far), every LIVE
- * vector (L columns >= j, U rows >= j, pivots rho[j-1..]) stores e times
- * its true value, and every IPGE identity -- a degree-2 product over a
- * degree-1 divisor -- maps e-scaled inputs to e-scaled outputs, so the
- * arithmetic never sees the pending signs.  A column push advances the
- * parity to e' = -e:
- *
- *   - the trailing region is left untouched: its true values flip, so its
- *     stored values are at parity e' automatically;
- *   - the two rebuilt vectors are written at parity e':
- *       stored rho'[j] = -stored U(j,j+1)          (true rho'[j] = U(j,j+1))
+ * DEFERRED TRANSPOSITION SIGNS.  A column swap flips every minor whose
+ * column set contains both swapped columns -- the whole trailing region,
+ * which an in-place chain cannot afford to visit.  The flips stay PENDING
+ * in the stored values; the driver settles them once at the end (see
+ * distant_push_inplace).  Invariant: with e = (-1)^(column pushes so far),
+ * every LIVE vector (L columns >= j, U rows >= j, rho[j-1..]) stores e
+ * times its true value, and each IPGE identity (degree-2 product over a
+ * degree-1 divisor) maps e-scaled inputs to e-scaled outputs.  A column
+ * push advances the parity to e' = -e: the untouched trailing region is at
+ * e' automatically (its true values flipped), the two rebuilt vectors are
+ * written at e' --
+ *       stored rho'[j] = -stored U(j,j+1)
  *       stored L'(i,j) = -( rho[j-1]*L(i,j+1) + L(i,j)*U(j,j+1) ) / rho[j]
- *     and the U(j+1,:) strip formulas below, evaluated on rho'[j] and
- *     L'(j+1,j) (already at e') and old row-j/j+1 values (at e), land at
- *     parity e' with no further sign work;
- *   - U row j and everything at positions < j are FROZEN at the parity
- *     they held when the chain passed them, recorded by the driver.
+ * -- and everything already passed is FROZEN at the parity it held,
+ * recorded by the driver.
  *
- * The rebuilt vectors:
- *
- *   new L column j (union of the old columns j, j+1; rows keep their
- *   labels -- no row swap), diagonal rho'[j], zeros dropped (no dependent
- *   forward strip here, unlike the diagonal push);
- *
- *   new U row j+1: diagonal rho[j+1] (stored value unchanged: the true
- *   pivot flips and so does the parity), and for c >= j+2 the apcpu strip
+ * New U row j+1: diagonal rho[j+1] (stored value unchanged: true pivot and
+ * parity flip together), and for c >= j+2 the apcpu strip
  *      xint       = ( rho[j-1]*U(j+1,c) + L(j+1,j)*U(j,c) ) / rho[j]
  *      U'(j+1,c)  = ( rho'[j]*xint - L'(j+1,j)*U(j,c) ) / rho[j-1]
- *   over the union of the old rows j, j+1.
+ * over the union of the old rows j, j+1.
  *
- * U row j needs NO edits: swapping the pair in the COLUMN overlay retargets
- * its old (j,j+1) entry to position j (the new diagonal, stored value
- * unchanged at the frozen parity) and its old diagonal to position j+1
- * (the corner U'(j,j+1) = old rho[j]), and moves the leading rows' entries
- * U(i,j) <-> U(i,j+1), i < j, in the same O(1) swap.  L's row overlay is
- * untouched.  Only rho[j] changes among the pivots.
+ * U row j needs NO edits: swapping the pair in the COLUMN overlay
+ * retargets its old (j,j+1) entry to the new diagonal, its old diagonal to
+ * the corner U'(j,j+1) = old rho[j], and moves the leading rows' entries
+ * U(i,j) <-> U(i,j+1) in the same O(1) swap.  L's row overlay is
+ * untouched; only rho[j] changes among the pivots.
  */
 static SLIP_info dyn_colpush_step (dyn_chain *C, int64_t j, bool *did)
 {
@@ -2324,10 +2033,7 @@ static SLIP_info dyn_colpush_step (dyn_chain *C, int64_t j, bool *did)
 
     #define CPK(method) { info = (method); if (info != SLIP_OK) return info; }
 
-    //--------------------------------------------------------------------------
     // feasibility: the new pivot is the upper support U(j,j+1)
-    //--------------------------------------------------------------------------
-
     int64_t pu = -1;
     for (int64_t p = 0; p < Uj->nz; p++)
     {
@@ -2348,10 +2054,7 @@ static SLIP_info dyn_colpush_step (dyn_chain *C, int64_t j, bool *did)
 
     mpz_neg (rp, Uj->x[pu]);                // stored rho'[j], parity e'
 
-    //--------------------------------------------------------------------------
     // new L column j over the union of the old columns j, j+1
-    //--------------------------------------------------------------------------
-
     nLj->nz = 0;
     CPK (dvec_reserve (nLj, Lj->nz + Lj1->nz + 1));
     nLj->idx[nLj->nz] = rsj;                // diagonal = rho'[j]
@@ -2398,10 +2101,7 @@ static SLIP_info dyn_colpush_step (dyn_chain *C, int64_t j, bool *did)
         if (nLj->idx[p] == rsj1) { pln = p; break; }
     }
 
-    //--------------------------------------------------------------------------
     // new U row j+1: diagonal, then the strip over the union of rows j, j+1
-    //--------------------------------------------------------------------------
-
     // xint over the union in columns >= j+2 (union zeros kept: the second
     // strip term can be nonzero where xint cancels to zero)
     xv->nz = 0;
@@ -2487,10 +2187,7 @@ static SLIP_info dyn_colpush_step (dyn_chain *C, int64_t j, bool *did)
     }
     nLj->nz = q;
 
-    //--------------------------------------------------------------------------
     // commit: swap in the rebuilt vectors, the pivot, and the column labels
-    //--------------------------------------------------------------------------
-
     dvec_swap (Lj, nLj);
     dvec_swap (Uj1, nUj1);
     mpz_swap (rho[j], rp);
@@ -2504,42 +2201,32 @@ static SLIP_info dyn_colpush_step (dyn_chain *C, int64_t j, bool *did)
 }
 
 /* Distant push k -> m on the factors of PAQ, in place: convert the CSC
- * factors to the dynamic form once, run |m - k| O(local) pushes, and
- * convert back once.  Every intermediate state is the exact REF
- * factorization of a genuinely permuted matrix, so integrality holds
- * throughout, and PAQ itself is never consulted.
+ * factors to the dynamic form once, run |m - k| O(local) pushes, convert
+ * back once.  Every intermediate state is the exact REF factorization of a
+ * genuinely permuted matrix; PAQ itself is never consulted.
  *
- * With mixed = false the chain is the pure DIAGONAL push (the symmetric
- * cyclic rotation: rows and columns move together), semantics matching the
- * adjacent apdpu_sparse chained: a zero pivot on the LAST push engages the
- * 2x2 block pivot fallback and sets *used_block (rhos'[.] = 0 is the block
- * marker); a zero pivot in the INTERIOR aborts with SLIP_SINGULAR and
- * *blocked_at (pushing through a block would divide by the zero pivot in
- * the scalar Sylvester identities), and the caller should refactorize.
+ * mixed = false: the pure DIAGONAL push chain (rows and columns move
+ * together).  A zero pivot on the LAST push engages the 2x2 block fallback
+ * and sets *used_block (rhos'[.] = 0 marks the block); a zero pivot in the
+ * INTERIOR aborts with SLIP_SINGULAR and *blocked_at, and the caller
+ * should refactorize.
  *
- * With mixed = true (rightward chains only, k < m) each step performs the
- * DIAGONAL push when its pivot is nonzero and the COLUMN push otherwise
- * (PERM_COLPUSH_FIRST flips the preference).  The two pivots are coupled
- * by the Sylvester identity: the diagonal-push pivot is
- * ( rho[j-1]*rho[j+1] + L(j+1,j)*U(j,j+1) ) / rho[j] and the column-push
- * pivot is the upper support U(j,j+1), so if either vanishes the other is
- * nonzero (a vanishing upper support kills the cross term and leaves
- * rho[j-1]*rho[j+1]/rho[j] != 0; a vanishing diagonal pivot forces the
- * cross term, hence U(j,j+1), nonzero): ONE of the two pushes is always
- * feasible, the chain never hits a zero pivot, and the 2x2 block fallback
- * is never needed (used_block may be NULL) -- the theorem that motivates
- * the mixed chain.  Each column push defers its
- * trailing transposition sign flips (see dyn_colpush_step); they are
- * settled here in one O(nnz) pass before the CSC conversion: with g(p) =
- * (number of column pushes at chain positions <= p) mod 2, L column c and
- * rho[c] are negated iff g(c) is odd, and U row r iff g(r-1) is odd (each
- * vector was frozen at the parity the chain held when it passed).  The
- * emitted factors are the exact plain REF factors of R * PAQ * sigma,
- * where sigma is the same column cycle as the symmetric chain but R is
- * only the sub-permutation contributed by the diagonal-push steps; the row
- * map actually applied (old position -> new position) is returned in
- * rowmap_out[0..n-1] (pass NULL if not wanted), and *ncolpush_out gets the
- * number of column pushes taken (NULL ok).
+ * mixed = true (rightward chains only, k < m): each step takes the
+ * DIAGONAL push when its pivot is nonzero, else the COLUMN push
+ * (PERM_COLPUSH_FIRST flips the preference).  The two pivots are Sylvester
+ * -coupled -- diagonal pivot ( rho[j-1]*rho[j+1] + L(j+1,j)*U(j,j+1) )
+ * / rho[j], column pivot U(j,j+1) -- so if either vanishes the other is
+ * nonzero: ONE push is always feasible, the chain never hits a zero pivot,
+ * and the block fallback is never needed (used_block may be NULL).  The
+ * column pushes' deferred sign flips (see dyn_colpush_step) are settled
+ * here in one O(nnz) pass before the CSC conversion: with g(p) = (column
+ * pushes at chain positions <= p) mod 2, L column c and rho[c] are negated
+ * iff g(c) is odd, U row r iff g(r-1) is odd (each vector froze at the
+ * parity the chain held when it passed).  The emitted factors are the
+ * plain REF factors of R * PAQ * sigma, where sigma is the full column
+ * cycle but R only the sub-permutation from the diagonal-push steps; the
+ * row map applied (old -> new position) is returned in rowmap_out (NULL
+ * ok) and the column-push count in *ncolpush_out (NULL ok).
  */
 static SLIP_info distant_push_inplace (SLIP_matrix **L_out,
     SLIP_matrix **U_out, SLIP_matrix **rhos_out, SLIP_matrix *L,
@@ -2606,14 +2293,12 @@ static SLIP_info distant_push_inplace (SLIP_matrix **L_out,
         if (mixed)
         {
 #ifndef PERM_COLPUSH_FIRST
-            // Prefer the diagonal push: it is exactly the pure chain's
-            // step, so the fill matches the symmetric chain wherever that
-            // chain survives (and measures ~34% less total fill on the LP
-            // test bases than preferring column pushes).  When its pivot
-            // vanishes -- the old hard failure -- the identity
-            // rho[j-1]*rho[j+1] + L(j+1,j)*U(j,j+1) = 0 forces a nonzero
-            // upper support, so the column push below cannot decline.
-            // Define PERM_COLPUSH_FIRST to flip the preference.
+            // Prefer the diagonal push: its fill matches the symmetric
+            // chain wherever that chain survives (~34% less total fill on
+            // the LP test bases than preferring column pushes).  When its
+            // pivot vanishes, Sylvester forces a nonzero upper support, so
+            // the column push below cannot decline.  Define
+            // PERM_COLPUSH_FIRST to flip the preference.
             info = dyn_push_step (&C, j, false, &blk);
             if (info != SLIP_SINGULAR)
             {
@@ -2631,11 +2316,9 @@ static SLIP_info distant_push_inplace (SLIP_matrix **L_out,
                 j += step;
                 continue;
             }
-            // No column push at this j: with PERM_COLPUSH_FIRST the upper
-            // support is zero and the diagonal push below cannot fail;
-            // otherwise this is unreachable (the diagonal pivot vanished,
-            // so the upper support was nonzero) and the dyn_push_step
-            // below re-fails and reports blocked_at.
+            // No column push at this j: with PERM_COLPUSH_FIRST the
+            // diagonal push below cannot fail; otherwise unreachable, and
+            // the dyn_push_step below re-fails and reports blocked_at.
         }
         info = dyn_push_step (&C, j, !mixed && last && used_block != NULL,
             &blk);
@@ -2735,15 +2418,11 @@ static void cycle_sigma (int64_t *sigma, int64_t *sigma_inv, int64_t n,
     for (int64_t j = 0; j < n; j++) sigma_inv[sigma[j]] = j;
 }
 
-/* Build PAQ' -- PAQ with its columns permuted by sigma and its rows by an
- * optional row map:  PAQ'[i][j] = PAQ[rho[i]][sigma[j]] where rowmap is the
- * inverse of rho (rowmap[old position] = new position; NULL for identity)
- * -- directly in CSC form from A, pinv, and q, without a dense
- * intermediate:  column c of PAQ' is column q[sigma[c]] of A with row
- * indices mapped through pinv (composed with rowmap when given).  For the
- * symmetric permutation of the pure diagonal-push chain pass
- * rowmap = sigma_inv; a mixed column/diagonal-push chain passes the row
- * map it actually applied (see distant_push_inplace).
+/* Build PAQ' = PAQ with columns permuted by sigma and rows by the optional
+ * rowmap (old position -> new position, NULL = identity), directly in CSC
+ * form: column c of PAQ' is column q[sigma[c]] of A with row indices
+ * mapped through pinv (composed with rowmap).  A mixed chain passes the
+ * row map it actually applied (see distant_push_inplace).
  */
 static SLIP_info build_paq_csc (SLIP_matrix **PAQ_handle, const SLIP_matrix *A,
     const int64_t *pinv, const int64_t *q, const int64_t *sigma,
@@ -2776,162 +2455,6 @@ static SLIP_info build_paq_csc (SLIP_matrix **PAQ_handle, const SLIP_matrix *A,
 
     *PAQ_handle = C;
     return SLIP_OK;
-}
-
-//------------------------------------------------------------------------------
-// benchmark: distant diagonal push vs. full refactorization
-//------------------------------------------------------------------------------
-
-/* Benchmark one distant diagonal push k -> m (0-based) against a full
- * refactorization of the permuted matrix, and print one table row.
- *
- * The update side chains |m - k| adjacent diagonal pushes on the factors of
- * PAQ, in place (distant_push_inplace: each push touches only the two
- * affected columns of L and rows of U).  The refactorization side does what
- * a solver
- * without the update would do: build PAQ' and run the full SLIP pipeline on
- * it (fresh COLAMD analysis + factorization, 'option').  Correctness is
- * checked two ways, neither counted in the timing columns:
- *
- *   - determinant: |rhos'[n-1]| from the update must equal |rhos[n-1]| from
- *     the refactorization (both are +-det(PAQ'); available in every case);
- *   - exact factors: a second, fixed-order refactorization of PAQ'
- *     ('option2': no ordering, diagonal pivoting) is compared entrywise with
- *     the updated factors -- valid whenever it keeps P = identity (factor
- *     uniqueness).  When the chain ends in a 2x2 block pivot the fixed-order
- *     refactorization is forced to row-pivot, leaving the determinant test.
- *
- * A zero pivot in the interior of the chain aborts the update; the row then
- * reports the failing position and the refactorization stands as the
- * fallback (its time is still shown -- that is what the fallback costs).
- */
-static SLIP_info bench_push (SLIP_matrix *A, SLIP_matrix *L1, SLIP_matrix *U1,
-    SLIP_matrix *rhos1, const int64_t *pinv1, const int64_t *q1,
-    int64_t k, int64_t m, SLIP_options *option, SLIP_options *option2)
-{
-    SLIP_info info = SLIP_OK;
-    int64_t n = A->n;
-    SLIP_matrix *L_s = NULL, *U_s = NULL, *rhos_s = NULL;   // updated factors
-    SLIP_matrix *Ap = NULL;                                 // PAQ' (CSC)
-    SLIP_LU_analysis *Sr = NULL, *Sv = NULL;
-    SLIP_matrix *Lr = NULL, *Ur = NULL, *rr = NULL;         // refactorization
-    SLIP_matrix *Lv = NULL, *Uv = NULL, *rv = NULL;         // fixed-order verify
-    int64_t *pr = NULL, *pv = NULL;
-    int64_t *sigma = NULL, *sigma_inv = NULL;
-    clock_t tic, toc;
-
-    #define BCK(method) { info = (method); if (info != SLIP_OK) goto done; }
-
-    sigma     = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
-    sigma_inv = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
-    if (sigma == NULL || sigma_inv == NULL)
-    {
-        info = SLIP_OUT_OF_MEMORY;
-        goto done;
-    }
-    cycle_sigma (sigma, sigma_inv, n, k, m);
-
-    // the update: in-place chain of adjacent diagonal pushes on the factors
-    bool blk = false;
-    int64_t blocked_at = -1;
-    tic = clock ();
-    info = distant_push_inplace (&L_s, &U_s, &rhos_s, L1, U1, rhos1, k, m,
-        false, NULL, NULL, &blk, &blocked_at, option);
-    toc = clock ();
-    double t_upd = (double) (toc - tic) / CLOCKS_PER_SEC;
-    bool blocked = (info == SLIP_SINGULAR);
-    if (blocked) info = SLIP_OK;    // handled: the row reports the fallback
-    BCK (info);
-
-    // the refactorization: full SLIP pipeline (fresh COLAMD) on PAQ'
-    BCK (build_paq_csc (&Ap, A, pinv1, q1, sigma, sigma_inv, option));
-    tic = clock ();
-    BCK (SLIP_LU_analyze (&Sr, Ap, option));
-    BCK (SLIP_LU_factorize (&Lr, &Ur, &rr, &pr, Ap, Sr, option));
-    toc = clock ();
-    double t_ref = (double) (toc - tic) / CLOCKS_PER_SEC;
-
-    // verification (never counted in the timings)
-    const char *verify = "";
-    if (!blocked)
-    {
-        bool det_ok = (mpz_cmpabs (rhos_s->x.mpz[n-1], rr->x.mpz[n-1]) == 0);
-
-        // random-vector probe: PAQ' * v == L' * D'^(-1) * U' * v (exact).
-        // Skipped when the update ended on a 2x2 block pivot: the probe
-        // helper assumes a scalar diagonal D.
-        bool probe_ok = true;
-        if (!blk)
-        {
-            BCK (probe_LDU_eq_M_csc (&probe_ok, L_s, U_s, rhos_s, Ap,
-                UINT64_C (0xC0FFEE1234567), option2));
-        }
-
-        BCK (SLIP_LU_analyze (&Sv, Ap, option2));
-        BCK (SLIP_LU_factorize (&Lv, &Uv, &rv, &pv, Ap, Sv, option2));
-        bool pv_identity = true;
-        for (int64_t i = 0; i < n; i++)
-        {
-            if (pv[i] != i) { pv_identity = false; break; }
-        }
-        if (pv_identity)
-        {
-            bool exact = csc_equal (L_s, Lv) && csc_equal (U_s, Uv) &&
-                equal_dense (rhos_s, rv);
-            verify = (!det_ok || !exact || !probe_ok) ? "MISMATCH" :
-                (blk ? "exact [2x2 block]" : "exact + probe");
-        }
-        else
-        {
-            verify = (!det_ok || !probe_ok) ? "MISMATCH" :
-                (blk ? "det [2x2 block]" : "det + probe (row-pivoted)");
-        }
-    }
-
-    // one table row
-    int64_t d = (k < m) ? m - k : k - m;
-    if (blocked)
-    {
-        printf ("  %5"PRId64" ->%6"PRId64" %6"PRId64"  %10s  %10.6f %9s"
-            "  %9s %9"PRId64"   chain hits 0 pivot at %"PRId64
-            " (refactor)\n", k + 1, m + 1, d, "--", t_ref, "--", "--",
-            Lr->p[n] + Ur->p[n], blocked_at + 1);
-    }
-    else
-    {
-        char spd[32];
-        if (t_upd > 0)
-        {
-            snprintf (spd, sizeof (spd), "%8.1fx", t_ref / t_upd);
-        }
-        else
-        {
-            snprintf (spd, sizeof (spd), "%9s", "inf");
-        }
-        printf ("  %5"PRId64" ->%6"PRId64" %6"PRId64"  %10.6f  %10.6f %s"
-            "  %9"PRId64" %9"PRId64"   %s\n", k + 1, m + 1, d, t_upd, t_ref,
-            spd, L_s->p[n] + U_s->p[n], Lr->p[n] + Ur->p[n], verify);
-    }
-
-done:
-    SLIP_matrix_free (&L_s, option);
-    SLIP_matrix_free (&U_s, option);
-    SLIP_matrix_free (&rhos_s, option);
-    SLIP_matrix_free (&Ap, option);
-    SLIP_matrix_free (&Lr, option);
-    SLIP_matrix_free (&Ur, option);
-    SLIP_matrix_free (&rr, option);
-    SLIP_matrix_free (&Lv, option);
-    SLIP_matrix_free (&Uv, option);
-    SLIP_matrix_free (&rv, option);
-    SLIP_FREE (pr);
-    SLIP_FREE (pv);
-    SLIP_LU_analysis_free (&Sr, option);
-    SLIP_LU_analysis_free (&Sv, option);
-    SLIP_FREE (sigma);
-    SLIP_FREE (sigma_inv);
-    #undef BCK
-    return info;
 }
 
 //------------------------------------------------------------------------------
@@ -3009,20 +2532,16 @@ static SLIP_info replace_col_csc (SLIP_matrix **A_out, const SLIP_matrix *A,
     return SLIP_OK;
 }
 
-/* REF (IPGE) triangular forward solve for the LAST column of U:  x holds
+/* REF (IPGE) triangular forward solve for the LAST column of U: x holds
  * the incoming column, dense, in the factorization's row space; on output
- * x[i] = U(i,n-1) and x[n-1] is the new final pivot rho[n-1].  Replacing
- * the last column changes nothing else: L columns 0..n-2 and U columns
- * 0..n-2 depend only on matrix columns 0..n-2, and L's last column is just
- * its diagonal (the new pivot).
+ * x[i] = U(i,n-1) and x[n-1] is the new final pivot.  Replacing the last
+ * column changes nothing else in the factors.
  *
- * Follows slip_ref_triangular_solve's IPGE-with-history scheme: h[i] is the
- * last pivot step applied to x[i], and a history update
- * x[i] = x[i]*rho[j-1]/rho[h[i]] brings a stale entry to step j before use,
- * so the total work is O(nnz(L)) exact operations even though x is dense.
- * Every intermediate x[i] is a bordered minor of the replaced matrix
- * (integrality throughout).  Returns SLIP_SINGULAR iff x[n-1] = 0, i.e.
- * the replaced matrix is singular. */
+ * Follows slip_ref_triangular_solve's IPGE-with-history scheme: h[i] is
+ * the last pivot step applied to x[i]; a history update
+ * x[i] = x[i]*rho[j-1]/rho[h[i]] brings a stale entry to step j before
+ * use, so the work is O(nnz(L)) exact operations even though x is dense.
+ * Returns SLIP_SINGULAR iff x[n-1] = 0 (the replaced matrix is singular). */
 static SLIP_info ref_solve_last (mpz_t *x, int64_t *h, const SLIP_matrix *L,
     mpz_t *rho, int64_t n)
 {
@@ -3071,41 +2590,30 @@ static SLIP_info ref_solve_last (mpz_t *x, int64_t *h, const SLIP_matrix *L,
     return (mpz_sgn (x[n-1]) == 0) ? SLIP_SINGULAR : SLIP_OK;
 }
 
-/* Replace basis column jcol (0-based) with a dense column and update the
+/* Replace basis column jcol with a dense column and update the
  * factorization, timed against a full refactorization of the new basis B'.
  *
- * The update is the exact analogue of the Forrest-Tomlin basis exchange,
- * built from the primitives above:
- *
- *   1. MIXED DISTANT PUSH: the PAQ position cpos holding the leaving
- *      column (q1[cpos] = jcol) is pushed to the last position, in place,
- *      by the mixed column/diagonal chain (distant_push_inplace with
- *      mixed = true): each step takes the diagonal push, falling back to
- *      the column push exactly where the diagonal pivot vanishes (where
- *      the pure chain used to die) -- the upper support is then provably
- *      nonzero, so on a nonsingular basis the chain CANNOT hit a zero
- *      pivot and the refactorization fallback for blocked chains is gone.
- *      The column cycle is absorbed into Q; the row cycle is only the
- *      part contributed by the diagonal-push steps (rowmap), absorbed
- *      into P.  The factors then describe M = R*(PAQ)*sigma with the
- *      leaving column last.
+ *   1. MIXED DISTANT PUSH: the PAQ position holding the leaving column is
+ *      pushed to the last position (distant_push_inplace, mixed = true).
+ *      The column cycle is absorbed into Q; the row cycle -- only the part
+ *      contributed by the diagonal-push steps (rowmap) -- into P.  The
+ *      factors then describe M = R*(PAQ)*sigma with the leaving column
+ *      last.
  *   2. REF FORWARD SOLVE: replacing the LAST column needs no elimination.
  *      The new last column of U is the IPGE solve of the incoming column
  *      (mapped into M's row space through rowmap) through L, its last
  *      entry is the new final pivot, and L changes only in its trailing
  *      diagonal entry.
  *
- * The refactorization side runs the full SLIP pipeline (fresh COLAMD +
- * factorization) on B'.  Verified, outside the timings, by (a) the
- * determinant -- +-det(B') from the updated factors must equal the
- * refactorization's -- and (b) entrywise comparison with a fixed-order
- * refactorization of M with its last column replaced (factor uniqueness),
- * as in bench_push.
+ * The refactorization side runs the full SLIP pipeline (fresh COLAMD) on
+ * B'.  Verified, outside the timings, by (a) the determinant against the
+ * refactorization's and (b) entrywise comparison with a fixed-order
+ * refactorization of M with its last column replaced (factor uniqueness).
  *
- * The update path is reported unavailable (the refactorization stands as
- * the fallback) only if B' is singular, detected exactly by the forward
- * solve's zero final pivot.  (A zero-pivot abort of the chain is kept as a
- * defensive path but is unreachable for a nonsingular B.)
+ * The update path is reported unavailable only if B' is singular, detected
+ * exactly by the forward solve's zero final pivot.  (A zero-pivot abort of
+ * the chain is kept as a defensive path but is unreachable for a
+ * nonsingular B.)
  */
 static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     SLIP_matrix *U1, SLIP_matrix *rhos1, const int64_t *pinv1,
@@ -3155,10 +2663,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     cycle_sigma (sigma, sigma_inv, n, cpos, n - 1);   // identity if cpos==n-1
     for (int64_t i = 0; i < n; i++) rowmap[i] = i;    // until the chain runs
 
-    //--------------------------------------------------------------------------
     // the update: push the leaving position to the end, then one REF solve
-    //--------------------------------------------------------------------------
-
     const char *skip = NULL;        // why the update path is unavailable
     bool upd_singular = false;      // the update detected B' is singular
     int64_t blocked_at = -1;
@@ -3256,10 +2761,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
         t_solve = (double) (toc - tic) / CLOCKS_PER_SEC;
     }
 
-    //--------------------------------------------------------------------------
     // refactorization
-    //--------------------------------------------------------------------------
-
     option->order = SLIP_NO_ORDERING;
     tic = clock ();
     RCK (SLIP_LU_analyze (&Sr, Ap, option));
@@ -3289,10 +2791,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     }
     RCK (info);
 
-    //--------------------------------------------------------------------------
     // verification (never counted in the timings)
-    //--------------------------------------------------------------------------
-
     const char *verify = NULL;
     bool probe_ran = false, probe_ok = false;
     if (skip == NULL)
@@ -3328,10 +2827,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
         }
     }
 
-    //--------------------------------------------------------------------------
     // report
-    //--------------------------------------------------------------------------
-
     printf ("\n---------------------------------------------------------------"
         "-\n");
     printf ("Column replacement: update vs. refactorization (CPU seconds)\n");
@@ -3448,15 +2944,12 @@ done:
 // sequential column replacement (-RN): fill trend over many updates
 //------------------------------------------------------------------------------
 
-/* Do nreps sequential column replacements on the basis A, each time updating
- * the tracked factors and (independently) refactoring from scratch for
+/* Do nreps sequential column replacements on the basis A (each update is
+ * the mixed distant push chain + one REF forward solve; the incoming dense
+ * pseudorandom column is seeded with the step number), each time updating
+ * the tracked factors and independently refactoring from scratch for
  * comparison.  Prints one table row per replacement (time, fill, probe
- * verdict) and a summary at the end.
- *
- * we seed the dense pseudorandom column with k. distant push chain with mixed
- * pushes, one REF forward solve.
- *
- */
+ * verdict) and a summary at the end. */
 static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
     SLIP_matrix *U1, SLIP_matrix *rhos1, const int64_t *pinv1,
     const int64_t *q1, int64_t jcol_start, int64_t nreps, double t_base,
@@ -3770,26 +3263,14 @@ done:
 // reconstruction helper
 //------------------------------------------------------------------------------
 
-/* Reconstruct the (un-permuted) matrix from its factors:  compute
- * M = L * D^(-1) * U exactly in rational (MPQ) arithmetic, then apply the
- * inverse permutations so that
+/* Reconstruct the un-permuted matrix from its factors: compute
+ * M = L * D^(-1) * U exactly in rational (MPQ) arithmetic, then un-permute
+ * as A_rec[i][j] = M[pinv[i]][qinv[j]] (SLIP conventions: column c of A*Q
+ * is column q[c] of A; (P*A*Q)[pinv[i]][c] = A[i][q[c]]).
  *
- *      A_rec[i][j] = M[pinv[i]][qinv[j]]
- *
- * which should equal the matrix that was factored.  On success *Arec_handle
- * points to a freshly allocated n-by-n dense MPZ matrix.
- *
- * Permutation conventions (from the SLIP_LU sources):
- *   - column ordering Q:  column c of A*Q is column q[c] of A.
- *   - row permutation P:  P has a 1 at (pinv[i], i), so
- *                         (P*A*Q)[pinv[i]][c] = A[i][q[c]].
- * Hence A[i][q[c]] = M[pinv[i]][c]; with j = q[c] (c = qinv[j]) this gives the
- * formula above.
- *
- * kb >= 0 marks a 2x2 block pivot at positions {kb, kb+1} (see apdpu): D
- * then carries a 2x2 block there, and rows kb, kb+1 of D^(-1)*U are formed
- * with the true 2x2 inverse (adjugate over determinant) instead of the
- * scalar reciprocals.  Pass kb = -1 for an all-scalar D.
+ * kb >= 0 marks a 2x2 block pivot at positions {kb, kb+1} (see apdpu):
+ * rows kb, kb+1 of D^(-1)*U are then formed with the true 2x2 inverse
+ * (adjugate over determinant).  Pass kb = -1 for an all-scalar D.
  */
 static SLIP_info reconstruct (SLIP_matrix **Arec_handle,
     const SLIP_matrix *L_dense, const SLIP_matrix *U_dense,
@@ -3921,22 +3402,15 @@ done:
 // probe helper: random-vector exactness check of L * D^(-1) * U == M
 //------------------------------------------------------------------------------
 
-/* Exact "am I really this matrix" test that avoids the O(n^3) mpq blowup of
- * reconstruct().  Draws a deterministic pseudorandom integer vector v (entries
- * in [-2^30, 2^30)) and checks
+/* Exact "am I really this matrix" test that avoids the O(n^3) mpq blowup
+ * of reconstruct(): draw a deterministic pseudorandom integer vector v
+ * (entries in [-2^30, 2^30)) and check M * v == L * D^(-1) * U * v, with
+ * D(k,k) = rhos[k-1]*rhos[k], rhos[-1] = 1 (no 2x2-block support -- not
+ * what -R uses).  Cost is O(nnz) GMP ops; no dense n x n intermediate.
  *
- *      M * v  ==  L * D^(-1) * U * v
- *
- * with M, L, U in CSC MPZ and rhos in DENSE MPZ; D(k,k) = rhos[k-1]*rhos[k],
- * rhos[-1] = 1 (no 2x2-block support here -- the block cases are diagonal
- * pushes, not what -R uses).  Cost is O(nnz(M) + nnz(U) + nnz(L)) GMP ops
- * plus an elementwise D^(-1) scaling; no dense n x n intermediate.
- *
- * The check is probabilistic in principle: a wrong pair with rational error
- * matrix E = L*D^(-1)*U - M would need E*v = 0 exactly on the drawn v, an
- * event whose probability for the 31-bit v drawn here is at most (max |E|
- * entry as a rational)/2^30 -- vanishingly small in practice.  Call twice with
- * different seeds to squeeze that probability further if desired.
+ * Probabilistic in principle: a wrong pair would need its error matrix to
+ * annihilate the drawn v exactly -- probability at most ~2^-30 per seed,
+ * vanishingly small in practice.
  */
 static SLIP_info probe_LDU_eq_M_csc (bool *ok, const SLIP_matrix *L,
     const SLIP_matrix *U, const SLIP_matrix *rhos, const SLIP_matrix *M,
@@ -4102,16 +3576,10 @@ done:
 int main (int argc, char* argv[])
 {
 
-    //--------------------------------------------------------------------------
     // Initialize the SLIP LU environment.
-    //--------------------------------------------------------------------------
-
     SLIP_initialize();
 
-    //--------------------------------------------------------------------------
     // Declare and initialize the data structures used below.
-    //--------------------------------------------------------------------------
-
     SLIP_matrix *A = NULL;          // user input matrix (CSC, MPZ)
     SLIP_matrix *A_dense = NULL;    // dense copy of A (for forming PAQ)
 
@@ -4166,23 +3634,20 @@ int main (int argc, char* argv[])
     clock_t tic, toc;
 
     // Command line: perm [-Q] [-D] [matrix_file [k]], or
-    //               perm -B [-Q] matrix_file [k m], or
     //               perm -R [-Q] [matrix_file [col]].
     // -Q selects the QSOpt_ex basis format (default: SLIP triplet format);
     // -D performs the adjacent DIAGONAL push (symmetric swap of columns AND
-    // rows k, k+1) instead of the column push; -B runs the distant diagonal
-    // push benchmark (chained APDPU vs. full refactorization); -R replaces
+    // rows k, k+1) instead of the column push; -R replaces
     // one basis column with a dense column and benchmarks the update
     // (distant push to the end + one REF forward solve) against a full
     // refactorization of the new basis.
-    bool qsx = false, diag = false, bench = false, repl = false;
+    bool qsx = false, diag = false, repl = false;
     int64_t nreps = 0;      // -R alone: 0 (single, detailed).  -R<N>: N reps.
     int ai = 1;
     while (ai < argc && argv[ai][0] == '-')
     {
         if      (strcmp (argv[ai], "-Q") == 0) { qsx = true; ai++; }
         else if (strcmp (argv[ai], "-D") == 0) { diag = true; ai++; }
-        else if (strcmp (argv[ai], "-B") == 0) { bench = true; ai++; }
         else if (argv[ai][0] == '-' && argv[ai][1] == 'R')
         {
             // -R (one replacement, detailed report) or -R<N> (N sequential
@@ -4208,17 +3673,10 @@ int main (int argc, char* argv[])
         {
             fprintf (stderr, "unknown flag '%s'\n"
                 "usage: perm [-Q] [-D] [matrix_file [k]]\n"
-                "       perm -B [-Q] matrix_file [k m]\n"
                 "       perm -R[N] [-Q] [matrix_file [col]]\n", argv[ai]);
             FREE_WORKSPACE;
             return 0;
         }
-    }
-    if (bench && repl)
-    {
-        fprintf (stderr, "-B and -R are mutually exclusive\n");
-        FREE_WORKSPACE;
-        return 0;
     }
 
     // -R defaults to the cycle basis snapshot (the format sniffer below
@@ -4236,12 +3694,8 @@ int main (int argc, char* argv[])
         return 0;
     }
     char *k_arg = (ai < argc) ? argv[ai++] : NULL;
-    char *m_arg = (ai < argc) ? argv[ai] : NULL;
 
-    //--------------------------------------------------------------------------
     // Read in the matrix A (SLIP triplet format, or a QSOpt_ex basis if -Q).
-    //--------------------------------------------------------------------------
-
     FILE* mat_file = fopen(mat_name, "r");
     if( mat_file == NULL )
     {
@@ -4250,21 +3704,12 @@ int main (int argc, char* argv[])
         return 0;
     }
 
-    // Sniff the format before trusting the -Q flag.  All three formats
-    // share the "m n nnz" header; they differ from the second line on:
-    //
-    //   old QSOpt_ex basis:  a single per-row denominator (1 token);
-    //   new QSOpt_ex basis:  0-indexed triplets whose values may be
-    //                        rationals "p/q" (3 tokens);
-    //   SLIP triplet file:   1-indexed triplets with numeric values
-    //                        (3 tokens, never a '/' or a 0 index).
-    //
-    // A 3-token second line is therefore a new-format basis iff a row or
-    // column index 0 appears (SLIP triplets are 1-based) or a '/' shows up
-    // in the first stretch of entries.  Misreading a basis as triplets is
-    // fatal: the 0-indexed triplets get the 1-based decrement and the
-    // resulting -1 indices crash SLIP_matrix_copy.
-    bool qsx_rational = false;
+    // Sniff the format before trusting the -Q flag.  Both formats share
+    // the "m n nnz" header and differ from the second line on: QSOpt_ex
+    // basis = 0-indexed triplets, values possibly "p/q"; SLIP triplet file
+    // = 1-indexed numeric triplets (never '/' or a 0 index).  Misreading a
+    // basis as triplets is fatal: the 1-based decrement turns its 0
+    // indices into -1 and crashes SLIP_matrix_copy.
     {
         char line[1024];
         double h1, h2, h3;
@@ -4275,17 +3720,16 @@ int main (int argc, char* argv[])
             fgets (line, sizeof (line), mat_file) != NULL)
         {
             int ntok = sscanf (line, "%ld %ld %255s", &r, &c, val);
-            if (ntok == 1)
+            if (ntok == 1)      // old row-scaled QSOpt_ex layout
             {
-                if (!qsx)
-                {
-                    fprintf (stderr, "%s looks like an old-format QSOpt_ex "
-                        "basis (single denominator after the header); "
-                        "reading it with the -Q reader\n", mat_name);
-                    qsx = true;
-                }
+                fprintf (stderr, "%s looks like an old row-scaled QSOpt_ex "
+                    "basis (per-row denominators after the header); that "
+                    "format is no longer supported\n", mat_name);
+                fclose (mat_file);
+                FREE_WORKSPACE;
+                return 0;
             }
-            else if (ntok == 3)
+            if (ntok == 3)
             {
                 bool basis = (r == 0 || c == 0 ||
                     strchr (val, '/') != NULL);
@@ -4296,12 +3740,11 @@ int main (int argc, char* argv[])
                 }
                 if (basis)
                 {
-                    qsx_rational = true;
                     if (!qsx)
                     {
-                        fprintf (stderr, "%s looks like a rational QSOpt_ex "
-                            "basis (0-indexed / rational triplets); reading "
-                            "it with the -Q reader\n", mat_name);
+                        fprintf (stderr, "%s looks like a QSOpt_ex basis "
+                            "(0-indexed / rational triplets); reading it "
+                            "with the -Q reader\n", mat_name);
                         qsx = true;
                     }
                 }
@@ -4319,7 +3762,7 @@ int main (int argc, char* argv[])
 
     if (qsx)
     {
-        OK(read_qsx_basis(&A, mat_file, qsx_rational, option));
+        OK(read_qsx_basis(&A, mat_file, option));
     }
     else
     {
@@ -4343,7 +3786,7 @@ int main (int argc, char* argv[])
             "%.0f GB; running the\nsparse-only workflow (no dense update, "
             "grids, or reconstructions).\n", n, dense_gb);
     }
-    if (bench || repl) dense_ok = false;    // the benchmarks are sparse-only
+    if (repl) dense_ok = false;             // the benchmark is sparse-only
 
     if (dense_ok)
     {
@@ -4351,11 +3794,8 @@ int main (int argc, char* argv[])
         print_dense_gated ("A matrix (original input)", A_dense);
     }
 
-    //--------------------------------------------------------------------------
     // Factorization 1: factor A normally (COLAMD + tolerance pivoting) to get
     // the column ordering Q (= S1->q) and the row permutation P (= pinv1).
-    //--------------------------------------------------------------------------
-
     tic = clock();
     OK(SLIP_LU_analyze(&S1, A, option));
     toc = clock();
@@ -4366,75 +3806,8 @@ int main (int argc, char* argv[])
     toc = clock();
     t_factor1 = (double) (toc - tic) / CLOCKS_PER_SEC;
 
-    //--------------------------------------------------------------------------
-    // Benchmark mode (-B): distant diagonal pushes vs. full refactorization.
-    //--------------------------------------------------------------------------
-
-    if (bench)
-    {
-        printf ("\nBenchmark: distant diagonal push (chained sparse APDPU) "
-            "vs. full refactorization.\nBaseline factorization of A: "
-            "analysis %.6f s + factorization %.6f s,\nnnz(L) + nnz(U) = "
-            "%"PRId64".  Each row moves row/column k of PAQ to position m\n"
-            "(cyclic rotation of the positions in between, 1-based); the "
-            "refactorization\ncolumn runs the full SLIP pipeline (fresh "
-            "COLAMD + factorization) on the\npermuted matrix.\n",
-            t_analyze1, t_factor1, L1->p[n] + U1->p[n]);
-        printf ("\n  %5s ->%6s %6s  %10s  %10s %9s  %9s %9s   %s\n",
-            "k", "m", "d", "update(s)", "refact(s)", "speedup",
-            "nnz(upd)", "nnz(ref)", "verification");
-        printf ("  -----------------------------------------------------"
-            "----------------------------------\n");
-
-        if (k_arg != NULL && m_arg != NULL)
-        {
-            int64_t kb = (int64_t) atol (k_arg) - 1;
-            int64_t mb = (int64_t) atol (m_arg) - 1;
-            if (kb < 0 || kb >= n || mb < 0 || mb >= n || kb == mb)
-            {
-                fprintf (stderr, "invalid push %s -> %s (need two distinct "
-                    "positions in 1..%"PRId64")\n", k_arg, m_arg, n);
-                FREE_WORKSPACE;
-                return 0;
-            }
-            OK (bench_push (A, L1, U1, rhos1, pinv1, S1->q, kb, mb,
-                option, option2));
-        }
-        else
-        {
-            // sweep: distances 1, 2, 4, ... (centered), then the two
-            // full-length pushes 1 -> n and n -> 1
-            int64_t dmax = 0;
-            for (int64_t d = 1; d < n; d *= 2)
-            {
-                OK (bench_push (A, L1, U1, rhos1, pinv1, S1->q,
-                    (n - 1 - d) / 2, (n - 1 - d) / 2 + d, option, option2));
-                dmax = d;
-            }
-            if (dmax != n - 1)
-            {
-                OK (bench_push (A, L1, U1, rhos1, pinv1, S1->q, 0, n - 1,
-                    option, option2));
-            }
-            OK (bench_push (A, L1, U1, rhos1, pinv1, S1->q, n - 1, 0,
-                option, option2));
-        }
-
-        printf ("\nverification (never counted in the timings): 'exact' = "
-            "the updated factors\nmatch a fixed-order refactorization of the "
-            "permuted matrix entrywise (factor\nuniqueness) AND the "
-            "determinants agree; 'det' = determinant check only (the\n"
-            "fixed-order refactorization had to row-pivot, so its factors "
-            "are not\ncomparable entrywise).\n");
-        FREE_WORKSPACE;
-        return 0;
-    }
-
-    //--------------------------------------------------------------------------
     // Replacement mode (-R): swap one basis column for a dense column and
     // benchmark the update (push to the end + REF solve) vs. refactorization.
-    //--------------------------------------------------------------------------
-
     if (repl)
     {
         int64_t jc;
@@ -4493,11 +3866,8 @@ int main (int argc, char* argv[])
                 n, RECON_MAX_N);
         }
 
-        //----------------------------------------------------------------------
         // Form PAQ explicitly: the matrix SLIP actually factored above.
         //     (P*A*Q)[pinv1[i]][c] = A[i][q1[c]]
-        //----------------------------------------------------------------------
-
         OK(SLIP_matrix_allocate(&PAQ, SLIP_DENSE, SLIP_MPZ, n, n, n*n,
             false, true, option));
         for (int64_t i = 0; i < n; i++)
@@ -4512,11 +3882,8 @@ int main (int argc, char* argv[])
             PAQ);
     }
 
-    //--------------------------------------------------------------------------
     // Ask which ADJACENT columns of PAQ to swap (k on the command line wins),
     // then swap columns kc and kc+1 of PAQ in place (Step 0 of APCPU).
-    //--------------------------------------------------------------------------
-
     int64_t kc;
     if (k_arg != NULL)
     {
@@ -4554,12 +3921,9 @@ int main (int argc, char* argv[])
             "PAQ' (PAQ after the adjacent column swap)", PAQ);
     }
 
-    //--------------------------------------------------------------------------
     // Sparse update (APCPU or APDPU): update the CSC factors directly,
     // using only stored entries of L1, U1, and rhos1 (back-solve trick; PAQ
     // is not consulted).  This also screens the singular case up front.
-    //--------------------------------------------------------------------------
-
     bool blk_sparse = false, blk_dense = false;    // 2x2 block pivot used?
     tic = clock();
     if (diag)
@@ -4600,11 +3964,8 @@ int main (int argc, char* argv[])
         L_s->p[n], U_s->p[n], L1->p[n], U1->p[n],
         blk_sparse ? " [2x2 block pivot]" : "");
 
-    //--------------------------------------------------------------------------
     // Dense update: APCPU (column push) or APDPU (diagonal push), then
     // cross-check against the sparse implementation where both ran.
-    //--------------------------------------------------------------------------
-
     if (dense_ok)
     {
         tic = clock();
@@ -4683,12 +4044,9 @@ int main (int argc, char* argv[])
             "MATCH" : "MISMATCH");
     }
 
-    //--------------------------------------------------------------------------
     // Reference: re-factor the swapped PAQ from scratch with NO column
     // ordering (identity Q, so the swap is preserved) and diagonal pivoting,
     // and compare the factors with the APCPU-updated ones entrywise.
-    //--------------------------------------------------------------------------
-
     sigma     = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
     sigma_inv = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
     if (sigma == NULL || sigma_inv == NULL) { FREE_WORKSPACE; return 0; }
@@ -4775,10 +4133,7 @@ int main (int argc, char* argv[])
             blk_sparse ? ", plus the sparse-vs-dense cross-check" : "");
     }
 
-    //--------------------------------------------------------------------------
     // Timing summary.
-    //--------------------------------------------------------------------------
-
     printf ("\n----------------------------------------------------------------\n");
     printf ("Timing summary (CPU seconds)\n");
     printf ("----------------------------------------------------------------\n");
@@ -4813,10 +4168,7 @@ int main (int argc, char* argv[])
             t_factor2 / t_apcpu);
     }
 
-    //--------------------------------------------------------------------------
     // Free memory.
-    //--------------------------------------------------------------------------
-
     FREE_WORKSPACE;
     return 0;
 }

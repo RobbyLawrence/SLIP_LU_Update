@@ -1,6 +1,9 @@
 problem: co9
-source_file: /Users/robertlawrence/qsopt-ex/Problems/co9.mps
+source_file: ../Problems/co9.mps
 nrows: 10789
 ncols_total: 25640
 nstruct: 14851
-total_snapshots_captured: 18979
+total_snapshots_captured: 19315
+ring_candidates: 64
+exactly_singular_skipped: 0
+valid_bases_dumped: 5
