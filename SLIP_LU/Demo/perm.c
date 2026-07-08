@@ -3260,6 +3260,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     // refactorization
     //--------------------------------------------------------------------------
 
+    option->order = SLIP_NO_ORDERING;
     tic = clock ();
     RCK (SLIP_LU_analyze (&Sr, Ap, option));
     info = SLIP_LU_factorize (&Lr, &Ur, &rr, &pr, Ap, Sr, option);
@@ -3623,6 +3624,7 @@ static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
 
         // refactor for comparison (never counted against the update)
         tic = clock ();
+        option->order = SLIP_NO_ORDERING;
         SQK (SLIP_LU_analyze (&Sr, A_next, option));
         info = SLIP_LU_factorize (&Lr, &Ur, &rr, &pr, A_next, Sr, option);
         toc = clock ();
@@ -3672,7 +3674,7 @@ static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
         {
             snprintf (spd, sizeof (spd), "%7s", "--");
         }
-        char fu_s[16], fr_s[16];
+        char fu_s[32], fr_s[32];
         if (fu < 0) snprintf (fu_s, sizeof (fu_s), "%9s", "SING");
         else snprintf (fu_s, sizeof (fu_s), "%9"PRId64, fu);
         if (fr < 0) snprintf (fr_s, sizeof (fr_s), "%9s", "SING");
