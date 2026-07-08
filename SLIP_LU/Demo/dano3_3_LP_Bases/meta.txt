@@ -1,0 +1,9 @@
+problem: dano3_3_LP
+source_file: ../Problems/dano3_3_LP.mps
+nrows: 3202
+ncols_total: 17075
+nstruct: 13873
+total_snapshots_captured: 22226
+ring_candidates: 64
+exactly_singular_skipped: 0
+valid_bases_dumped: 5
