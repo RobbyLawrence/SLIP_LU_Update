@@ -95,6 +95,12 @@
 // printing / swapping / comparison helpers
 //------------------------------------------------------------------------------
 
+// Forward declaration: defined below near reconstruct(); used by the
+// verification blocks in bench_push and bench_replace, which sit above it.
+static SLIP_info probe_LDU_eq_M_csc (bool *ok, const SLIP_matrix *L,
+    const SLIP_matrix *U, const SLIP_matrix *rhos, const SLIP_matrix *M,
+    uint64_t seed, const SLIP_options *option);
+
 /* Print a dense SLIP_MPZ matrix as a 2D grid (rows down, columns across),
  * right-aligning every entry to the width of the widest entry so the columns
  * line up.  The dense matrix stores A(i,j) at A->x.mpz[i + j*A->m], which the
@@ -2850,6 +2856,17 @@ static SLIP_info bench_push (SLIP_matrix *A, SLIP_matrix *L1, SLIP_matrix *U1,
     if (!blocked)
     {
         bool det_ok = (mpz_cmpabs (rhos_s->x.mpz[n-1], rr->x.mpz[n-1]) == 0);
+
+        // random-vector probe: PAQ' * v == L' * D'^(-1) * U' * v (exact).
+        // Skipped when the update ended on a 2x2 block pivot: the probe
+        // helper assumes a scalar diagonal D.
+        bool probe_ok = true;
+        if (!blk)
+        {
+            BCK (probe_LDU_eq_M_csc (&probe_ok, L_s, U_s, rhos_s, Ap,
+                UINT64_C (0xC0FFEE1234567), option2));
+        }
+
         BCK (SLIP_LU_analyze (&Sv, Ap, option2));
         BCK (SLIP_LU_factorize (&Lv, &Uv, &rv, &pv, Ap, Sv, option2));
         bool pv_identity = true;
@@ -2861,13 +2878,13 @@ static SLIP_info bench_push (SLIP_matrix *A, SLIP_matrix *L1, SLIP_matrix *U1,
         {
             bool exact = csc_equal (L_s, Lv) && csc_equal (U_s, Uv) &&
                 equal_dense (rhos_s, rv);
-            verify = (!det_ok || !exact) ? "MISMATCH" :
-                (blk ? "exact [2x2 block]" : "exact");
+            verify = (!det_ok || !exact || !probe_ok) ? "MISMATCH" :
+                (blk ? "exact [2x2 block]" : "exact + probe");
         }
         else
         {
-            verify = !det_ok ? "MISMATCH" :
-                (blk ? "det [2x2 block]" : "det (row-pivoted)");
+            verify = (!det_ok || !probe_ok) ? "MISMATCH" :
+                (blk ? "det [2x2 block]" : "det + probe (row-pivoted)");
         }
     }
 
@@ -2923,10 +2940,11 @@ done:
 
 /* Fill v[0..n-1] with a deterministic pseudorandom DENSE column: every
  * entry is in {-9..-1, 1..9} (never zero), so the incoming column has full
- * pattern.  Deterministic so runs are reproducible. */
-static void fill_dense_column (mpz_t *v, int64_t n)
+ * pattern.  Deterministic so runs are reproducible; the seed lets sequential
+ * replacements (-RN) produce a distinct column at every step. */
+static void fill_dense_column_seeded (mpz_t *v, int64_t n, uint64_t seed)
 {
-    uint64_t s = UINT64_C (0x9E3779B97F4A7C15);
+    uint64_t s = seed ? seed : UINT64_C (0x9E3779B97F4A7C15);
     for (int64_t r = 0; r < n; r++)
     {
         s = s * UINT64_C (6364136223846793005)
@@ -2935,6 +2953,11 @@ static void fill_dense_column (mpz_t *v, int64_t n)
         if ((s >> 32) & 1) val = -val;
         mpz_set_si (v[r], val);
     }
+}
+
+static void fill_dense_column (mpz_t *v, int64_t n)
+{
+    fill_dense_column_seeded (v, n, UINT64_C (0x9E3779B97F4A7C15));
 }
 
 /* B' = A with column jcol replaced by the dense column v (CSC copy). */
@@ -3234,7 +3257,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     }
 
     //--------------------------------------------------------------------------
-    // the refactorization: full SLIP pipeline on the replaced basis B'
+    // refactorization
     //--------------------------------------------------------------------------
 
     tic = clock ();
@@ -3270,10 +3293,18 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     //--------------------------------------------------------------------------
 
     const char *verify = NULL;
+    bool probe_ran = false, probe_ok = false;
     if (skip == NULL)
     {
         bool det_ok = (mpz_cmpabs (rhos_s->x.mpz[n-1], rr->x.mpz[n-1]) == 0);
         RCK (build_paq_csc (&Mv, Ap, pinv1, q1, sigma, rowmap, option2));
+
+        // random-vector probe: PAQ' * v == L' * D'^(-1) * U' * v (exact).
+        // Cheap and independent of the fixed-order refactor comparison below.
+        RCK (probe_LDU_eq_M_csc (&probe_ok, L_s, U_s, rhos_s, Mv,
+            UINT64_C (0xC0FFEE1234567), option2));
+        probe_ran = true;
+
         RCK (SLIP_LU_analyze (&Sv, Mv, option2));
         RCK (SLIP_LU_factorize (&Lv, &Uv, &rv, &pv, Mv, Sv, option2));
         bool pv_identity = true;
@@ -3366,22 +3397,17 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
         printf ("  %-23s L %9"PRId64"   U %9"PRId64"   L+U %9"PRId64
             "  (%+"PRId64")\n", "refactorized B'",
             Lr->p[n], Ur->p[n], fr, fr - fb);
-        printf ("  the update changed the factor nonzeros by %+"PRId64
-            " (%+.2f%%)", fu - fb, 100.0 * (double) (fu - fb) / (double) fb);
-        if (fu == fr)
-        {
-            printf (", matching\n  the refactorization's count.\n");
-        }
-        else
-        {
-            printf ("; its factors hold\n  %"PRId64" %s nonzeros than the "
-                "refactorization of B'.\n",
-                (fu < fr) ? fr - fu : fu - fr,
-                (fu < fr) ? "FEWER" : "MORE");
-        }
+
+        // machine-parseable delta (updated - refactorized); negative = update
+        // is sparser than the fresh COLAMD refactor
+        printf ("  update minus refactor nonzeros: %+"PRId64"\n", fu - fr);
         printf ("-------------------------------------------------------------"
             "----\n");
         printf ("  verification: %s\n", verify);
+        if (probe_ran)
+        {
+            printf ("  random-vector probe: %s\n", probe_ok ? "MATCH" : "MISMATCH");
+        }
     }
     else
     {
@@ -3414,6 +3440,327 @@ done:
     SLIP_LU_analysis_free (&Sr, option);
     SLIP_LU_analysis_free (&Sv, option);
     #undef RCK
+    return info;
+}
+
+//------------------------------------------------------------------------------
+// sequential column replacement (-RN): fill trend over many updates
+//------------------------------------------------------------------------------
+
+/* Do nreps sequential column replacements on the basis A, each time updating
+ * the tracked factors and (independently) refactoring from scratch for
+ * comparison.  Prints one table row per replacement (time, fill, probe
+ * verdict) and a summary at the end.
+ *
+ * we seed the dense pseudorandom column with k. distant push chain with mixed
+ * pushes, one REF forward solve.
+ *
+ */
+static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
+    SLIP_matrix *U1, SLIP_matrix *rhos1, const int64_t *pinv1,
+    const int64_t *q1, int64_t jcol_start, int64_t nreps, double t_base,
+    SLIP_options *option, SLIP_options *option2)
+{
+    SLIP_info info = SLIP_OK;
+    int64_t n = A->n;
+
+    // rolling state
+    SLIP_matrix *A_cur = NULL;              // current basis, in original space
+    SLIP_matrix *A_next = NULL;             // basis after this iteration
+    SLIP_matrix *L = NULL, *U = NULL, *rhos = NULL;             // current factors
+    SLIP_matrix *L_next = NULL, *U_next = NULL, *rhos_next = NULL;
+    SLIP_matrix *Un = NULL;                 // scratch when appending last U col
+    int64_t *pinv = NULL, *q = NULL;
+    int64_t *pinv_next = NULL, *q_next = NULL;
+    int64_t *qinv = NULL, *sigma = NULL, *sigma_inv = NULL;
+    int64_t *rowmap = NULL, *h = NULL, *ident = NULL;
+
+    // per-iteration scratch
+    SLIP_matrix *v = NULL, *xd = NULL, *Mv = NULL;
+    SLIP_matrix *Lr = NULL, *Ur = NULL, *rr = NULL;
+    SLIP_LU_analysis *Sr = NULL;
+    int64_t *pr = NULL;
+
+    #define SQK(method) { info = (method); if (info != SLIP_OK) goto done; }
+
+    // clone the initial factors and permutations so we can update them
+    SQK (SLIP_matrix_copy (&A_cur, SLIP_CSC,   SLIP_MPZ, A,     option));
+    SQK (SLIP_matrix_copy (&L,     SLIP_CSC,   SLIP_MPZ, L1,    option));
+    SQK (SLIP_matrix_copy (&U,     SLIP_CSC,   SLIP_MPZ, U1,    option));
+    SQK (SLIP_matrix_copy (&rhos,  SLIP_DENSE, SLIP_MPZ, rhos1, option));
+
+    pinv      = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    q         = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    pinv_next = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    q_next    = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    qinv      = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    sigma     = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    sigma_inv = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    rowmap    = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    h         = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    ident     = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    if (!pinv || !q || !pinv_next || !q_next || !qinv || !sigma || !sigma_inv
+        || !rowmap || !h || !ident)
+    {
+        info = SLIP_OUT_OF_MEMORY;
+        goto done;
+    }
+    memcpy (pinv, pinv1, n * sizeof (int64_t));
+    memcpy (q,    q1,    n * sizeof (int64_t));
+    for (int64_t i = 0; i < n; i++) ident[i] = i;
+
+    int64_t fb = L->p[n] + U->p[n];
+    int64_t init_fb = fb;
+    double t_upd_total = 0.0, t_ref_total = 0.0;
+    int64_t bad = 0, done_reps = 0;
+    int64_t final_fr = fb;
+
+    printf ("\n---------------------------------------------------------------"
+        "---------------------\n");
+    printf ("Sequential column replacement: %"PRId64" iterations starting at "
+        "column %"PRId64"\n", nreps, jcol_start + 1);
+    printf ("(baseline factorization of B took %.6f s; L+U = %"PRId64")\n",
+        t_base, fb);
+    printf ("-----------------------------------------------------------------"
+        "-------------------\n");
+    printf ("  %4s %6s %6s %8s %8s %9s %9s %8s %s\n",
+        "iter", "jcol", "cpos", "t_upd", "t_ref",
+        "L+U(upd)", "L+U(ref)", "speedup", "verify");
+    printf ("-----------------------------------------------------------------"
+        "-------------------\n");
+
+    for (int64_t k = 0; k < nreps; k++)
+    {
+        int64_t jcol = (jcol_start + k) % n;
+
+        // cpos = position of jcol in the current column ordering
+        for (int64_t c = 0; c < n; c++) qinv[q[c]] = c;
+        int64_t cpos = qinv[jcol];
+
+        // build the new dense column (per-iteration seed for distinct columns)
+        SQK (SLIP_matrix_allocate (&v, SLIP_DENSE, SLIP_MPZ, n, 1, n,
+            false, true, option));
+        fill_dense_column_seeded (v->x.mpz, n,
+            UINT64_C (0x9E3779B97F4A7C15) ^ (uint64_t) (k + 1));
+        SQK (replace_col_csc (&A_next, A_cur, jcol, v, option));
+
+        // permutation trackers for this step
+        cycle_sigma (sigma, sigma_inv, n, cpos, n - 1);
+        for (int64_t i = 0; i < n; i++) rowmap[i] = i;
+
+        // the update: mixed distant push cpos -> n-1, then REF solve
+        clock_t tic = clock ();
+        bool singular = false;
+        if (cpos < n - 1)
+        {
+            info = distant_push_inplace (&L_next, &U_next, &rhos_next, L, U,
+                rhos, cpos, n - 1, true, rowmap, NULL, NULL, NULL, option);
+            if (info == SLIP_SINGULAR) { singular = true; info = SLIP_OK; }
+            else SQK (info);
+        }
+        else
+        {
+            SQK (SLIP_matrix_copy (&L_next,    SLIP_CSC,   SLIP_MPZ, L,    option));
+            SQK (SLIP_matrix_copy (&U_next,    SLIP_CSC,   SLIP_MPZ, U,    option));
+            SQK (SLIP_matrix_copy (&rhos_next, SLIP_DENSE, SLIP_MPZ, rhos, option));
+        }
+
+        if (!singular)
+        {
+            SQK (SLIP_matrix_allocate (&xd, SLIP_DENSE, SLIP_MPZ, n, 1, n,
+                false, true, option));
+            for (int64_t r = 0; r < n; r++)
+            {
+                mpz_set (xd->x.mpz[rowmap[pinv[r]]], v->x.mpz[r]);
+            }
+            info = ref_solve_last (xd->x.mpz, h, L_next, rhos_next->x.mpz, n);
+            if (info == SLIP_SINGULAR) { singular = true; info = SLIP_OK; }
+            else SQK (info);
+        }
+
+        if (!singular)
+        {
+            // commit new last-column entries into L, U, rhos
+            mpz_set (rhos_next->x.mpz[n-1], xd->x.mpz[n-1]);
+            for (int64_t p = L_next->p[n-1]; p < L_next->p[n]; p++)
+            {
+                if (L_next->i[p] == n - 1)
+                {
+                    mpz_set (L_next->x.mpz[p], xd->x.mpz[n-1]);
+                }
+            }
+            int64_t base = U_next->p[n-1], xnz = 0;
+            for (int64_t i = 0; i < n; i++)
+            {
+                if (mpz_sgn (xd->x.mpz[i]) != 0) xnz++;
+            }
+            SQK (SLIP_matrix_allocate (&Un, SLIP_CSC, SLIP_MPZ, n, n,
+                base + xnz, false, true, option));
+            for (int64_t j = 0; j < n - 1; j++) Un->p[j] = U_next->p[j];
+            for (int64_t p = 0; p < base; p++)
+            {
+                Un->i[p] = U_next->i[p];
+                mpz_swap (Un->x.mpz[p], U_next->x.mpz[p]);
+            }
+            Un->p[n-1] = base;
+            int64_t nz = base;
+            for (int64_t i = 0; i < n; i++)
+            {
+                if (mpz_sgn (xd->x.mpz[i]) != 0)
+                {
+                    Un->i[nz] = i;
+                    mpz_swap (Un->x.mpz[nz], xd->x.mpz[i]);
+                    nz++;
+                }
+            }
+            Un->p[n] = nz;
+            SLIP_matrix_free (&U_next, option);
+            U_next = Un;
+            Un = NULL;
+        }
+        clock_t toc = clock ();
+        double t_upd = (double) (toc - tic) / CLOCKS_PER_SEC;
+
+        // refactor for comparison (never counted against the update)
+        tic = clock ();
+        SQK (SLIP_LU_analyze (&Sr, A_next, option));
+        info = SLIP_LU_factorize (&Lr, &Ur, &rr, &pr, A_next, Sr, option);
+        toc = clock ();
+        double t_ref = (double) (toc - tic) / CLOCKS_PER_SEC;
+        bool ref_singular = (info == SLIP_SINGULAR);
+        if (ref_singular) info = SLIP_OK;
+        else SQK (info);
+
+        // compose new permutations for the next iteration
+        for (int64_t c = 0; c < n; c++) q_next[c]    = q[sigma[c]];
+        for (int64_t r = 0; r < n; r++) pinv_next[r] = rowmap[pinv[r]];
+
+        const char *verdict;
+        int64_t fu = singular ? -1 : L_next->p[n] + U_next->p[n];
+        int64_t fr = ref_singular ? -1 : Lr->p[n] + Ur->p[n];
+
+        if (singular && ref_singular)
+        {
+            verdict = "singular (both agree)";
+        }
+        else if (singular != ref_singular)
+        {
+            verdict = "SINGULAR MISMATCH";
+            bad++;
+        }
+        else
+        {
+            // probe against the target M defined by the composed permutations
+            SQK (build_paq_csc (&Mv, A_next, pinv_next, q_next, ident, NULL,
+                option2));
+            bool probe_ok = false;
+            SQK (probe_LDU_eq_M_csc (&probe_ok, L_next, U_next, rhos_next,
+                Mv, UINT64_C (0xC0FFEE1234567) + (uint64_t) k, option2));
+            SLIP_matrix_free (&Mv, option2);
+            bool det_ok = (mpz_cmpabs (rhos_next->x.mpz[n-1],
+                rr->x.mpz[n-1]) == 0);
+            if (probe_ok && det_ok) verdict = "ok";
+            else { verdict = "MISMATCH"; bad++; }
+        }
+
+        char spd[16];
+        if (!singular && !ref_singular && t_upd > 0)
+        {
+            snprintf (spd, sizeof (spd), "%6.2fx", t_ref / t_upd);
+        }
+        else
+        {
+            snprintf (spd, sizeof (spd), "%7s", "--");
+        }
+        char fu_s[16], fr_s[16];
+        if (fu < 0) snprintf (fu_s, sizeof (fu_s), "%9s", "SING");
+        else snprintf (fu_s, sizeof (fu_s), "%9"PRId64, fu);
+        if (fr < 0) snprintf (fr_s, sizeof (fr_s), "%9s", "SING");
+        else snprintf (fr_s, sizeof (fr_s), "%9"PRId64, fr);
+
+        printf ("  %4"PRId64" %6"PRId64" %6"PRId64" %8.4f %8.4f %s %s %s %s\n",
+            k + 1, jcol + 1, cpos + 1, t_upd, t_ref, fu_s, fr_s, spd, verdict);
+
+        if (!singular && !ref_singular)
+        {
+            t_upd_total += t_upd;
+            t_ref_total += t_ref;
+            done_reps++;
+            final_fr = fr;
+            fb = fu;
+        }
+
+        // rotate state: (A_cur, L, U, rhos, pinv, q) := (A_next, L_next, ...)
+        SLIP_matrix_free (&A_cur, option); A_cur = A_next; A_next = NULL;
+        SLIP_matrix_free (&L, option);     L    = L_next;    L_next = NULL;
+        SLIP_matrix_free (&U, option);     U    = U_next;    U_next = NULL;
+        SLIP_matrix_free (&rhos, option);  rhos = rhos_next; rhos_next = NULL;
+        { int64_t *t = pinv; pinv = pinv_next; pinv_next = t; }
+        { int64_t *t = q;    q    = q_next;    q_next    = t; }
+
+        SLIP_matrix_free (&Lr, option);
+        SLIP_matrix_free (&Ur, option);
+        SLIP_matrix_free (&rr, option);
+        SLIP_FREE (pr); pr = NULL;
+        SLIP_LU_analysis_free (&Sr, option);
+        SLIP_matrix_free (&v, option);
+        SLIP_matrix_free (&xd, option);
+
+        if (singular || ref_singular) break;
+    }
+
+    printf ("-----------------------------------------------------------------"
+        "-------------------\n");
+    printf ("Summary over %"PRId64" successful iterations "
+        "(started at L+U = %"PRId64"):\n", done_reps, init_fb);
+    if (done_reps > 0)
+    {
+        printf ("  total update time:       %10.6f  (avg %.6f per step)\n",
+            t_upd_total, t_upd_total / (double) done_reps);
+        printf ("  total refactor time:     %10.6f  (avg %.6f per step)\n",
+            t_ref_total, t_ref_total / (double) done_reps);
+        printf ("  cumulative speedup:      %10.2fx\n",
+            (t_upd_total > 0) ? (t_ref_total / t_upd_total) : 0.0);
+        printf ("  final L+U (update):      %10"PRId64"  (%+"PRId64
+            " vs. baseline)\n", fb, fb - init_fb);
+        printf ("  final L+U (refactor):    %10"PRId64"  (%+"PRId64
+            " vs. baseline)\n", final_fr, final_fr - init_fb);
+        printf ("  update vs. refactor:     %+"PRId64" (%s by %.2f%%)\n",
+            fb - final_fr, (fb < final_fr) ? "sparser" : "denser",
+            100.0 * (double) (fb < final_fr ? final_fr - fb : fb - final_fr)
+                / (double) final_fr);
+    }
+    printf ("  verification failures:   %10"PRId64"\n", bad);
+
+done:
+    SLIP_matrix_free (&A_cur,     option);
+    SLIP_matrix_free (&A_next,    option);
+    SLIP_matrix_free (&L,         option);
+    SLIP_matrix_free (&U,         option);
+    SLIP_matrix_free (&rhos,      option);
+    SLIP_matrix_free (&L_next,    option);
+    SLIP_matrix_free (&U_next,    option);
+    SLIP_matrix_free (&rhos_next, option);
+    SLIP_matrix_free (&Un,        option);
+    SLIP_matrix_free (&v,         option);
+    SLIP_matrix_free (&xd,        option);
+    SLIP_matrix_free (&Mv,        option);
+    SLIP_matrix_free (&Lr,        option);
+    SLIP_matrix_free (&Ur,        option);
+    SLIP_matrix_free (&rr,        option);
+    SLIP_FREE (pinv);
+    SLIP_FREE (q);
+    SLIP_FREE (pinv_next);
+    SLIP_FREE (q_next);
+    SLIP_FREE (qinv);
+    SLIP_FREE (sigma);
+    SLIP_FREE (sigma_inv);
+    SLIP_FREE (rowmap);
+    SLIP_FREE (h);
+    SLIP_FREE (ident);
+    SLIP_FREE (pr);
+    SLIP_LU_analysis_free (&Sr, option);
+    #undef SQK
     return info;
 }
 
@@ -3569,6 +3916,144 @@ done:
 }
 
 //------------------------------------------------------------------------------
+// probe helper: random-vector exactness check of L * D^(-1) * U == M
+//------------------------------------------------------------------------------
+
+/* Exact "am I really this matrix" test that avoids the O(n^3) mpq blowup of
+ * reconstruct().  Draws a deterministic pseudorandom integer vector v (entries
+ * in [-2^30, 2^30)) and checks
+ *
+ *      M * v  ==  L * D^(-1) * U * v
+ *
+ * with M, L, U in CSC MPZ and rhos in DENSE MPZ; D(k,k) = rhos[k-1]*rhos[k],
+ * rhos[-1] = 1 (no 2x2-block support here -- the block cases are diagonal
+ * pushes, not what -R uses).  Cost is O(nnz(M) + nnz(U) + nnz(L)) GMP ops
+ * plus an elementwise D^(-1) scaling; no dense n x n intermediate.
+ *
+ * The check is probabilistic in principle: a wrong pair with rational error
+ * matrix E = L*D^(-1)*U - M would need E*v = 0 exactly on the drawn v, an
+ * event whose probability for the 31-bit v drawn here is at most (max |E|
+ * entry as a rational)/2^30 -- vanishingly small in practice.  Call twice with
+ * different seeds to squeeze that probability further if desired.
+ */
+static SLIP_info probe_LDU_eq_M_csc (bool *ok, const SLIP_matrix *L,
+    const SLIP_matrix *U, const SLIP_matrix *rhos, const SLIP_matrix *M,
+    uint64_t seed, const SLIP_options *option)
+{
+    SLIP_info info = SLIP_OK;
+    int64_t n = L->n;
+    SLIP_matrix *v = NULL, *w1 = NULL, *y = NULL;   // integer vectors
+    SLIP_matrix *z = NULL, *w2 = NULL;              // rational vectors
+    SLIP_matrix *tmpq = NULL;                       // scratch mpq scalars
+    mpz_t dkk;
+    bool dkk_init = false;
+
+    #define PCK(method) { info = (method); if (info != SLIP_OK) goto done; }
+
+    *ok = false;
+
+    PCK (SLIP_matrix_allocate (&v,  SLIP_DENSE, SLIP_MPZ, n, 1, n,
+        false, true, option));
+    PCK (SLIP_matrix_allocate (&w1, SLIP_DENSE, SLIP_MPZ, n, 1, n,
+        false, true, option));
+    PCK (SLIP_matrix_allocate (&y,  SLIP_DENSE, SLIP_MPZ, n, 1, n,
+        false, true, option));
+    PCK (SLIP_matrix_allocate (&z,  SLIP_DENSE, SLIP_MPQ, n, 1, n,
+        false, true, option));
+    PCK (SLIP_matrix_allocate (&w2, SLIP_DENSE, SLIP_MPQ, n, 1, n,
+        false, true, option));
+    PCK (SLIP_matrix_allocate (&tmpq, SLIP_DENSE, SLIP_MPQ, 2, 1, 2,
+        false, true, option));
+    mpz_init (dkk);
+    dkk_init = true;
+
+    mpq_t *t1 = &SLIP_1D (tmpq, 0, mpq);
+    mpq_t *t2 = &SLIP_1D (tmpq, 1, mpq);
+
+    // draw v with a splitmix64-style PRNG; entries in [-2^30, 2^30)
+    uint64_t s = seed ? seed : UINT64_C (0x9E3779B97F4A7C15);
+    for (int64_t i = 0; i < n; i++)
+    {
+        s += UINT64_C (0x9E3779B97F4A7C15);
+        uint64_t r = s;
+        r = (r ^ (r >> 30)) * UINT64_C (0xBF58476D1CE4E5B9);
+        r = (r ^ (r >> 27)) * UINT64_C (0x94D049BB133111EB);
+        r ^= (r >> 31);
+        int64_t vi = (int64_t) (r & UINT64_C (0x7FFFFFFF)) - INT64_C (0x40000000);
+        mpz_set_si (SLIP_1D (v, i, mpz), vi);
+    }
+
+    // w1 = M * v
+    for (int64_t j = 0; j < n; j++)
+    {
+        for (int64_t p = M->p[j]; p < M->p[j+1]; p++)
+        {
+            mpz_addmul (SLIP_1D (w1, M->i[p], mpz),
+                M->x.mpz[p], SLIP_1D (v, j, mpz));
+        }
+    }
+
+    // y = U * v
+    for (int64_t j = 0; j < n; j++)
+    {
+        for (int64_t p = U->p[j]; p < U->p[j+1]; p++)
+        {
+            mpz_addmul (SLIP_1D (y, U->i[p], mpz),
+                U->x.mpz[p], SLIP_1D (v, j, mpz));
+        }
+    }
+
+    // z[k] = y[k] / D(k,k) with D(k,k) = rhos[k-1] * rhos[k], rhos[-1] = 1
+    for (int64_t k = 0; k < n; k++)
+    {
+        if (k == 0)
+        {
+            mpz_set (dkk, rhos->x.mpz[0]);
+        }
+        else
+        {
+            PCK (SLIP_mpz_mul (dkk, rhos->x.mpz[k-1], rhos->x.mpz[k]));
+        }
+        if (mpz_sgn (dkk) == 0) { info = SLIP_SINGULAR; goto done; }
+        mpq_set_num (SLIP_1D (z, k, mpq), SLIP_1D (y, k, mpz));
+        mpq_set_den (SLIP_1D (z, k, mpq), dkk);
+        mpq_canonicalize (SLIP_1D (z, k, mpq));
+    }
+
+    // w2 = L * z  (rational SpMV, walking CSC L by columns)
+    for (int64_t j = 0; j < n; j++)
+    {
+        for (int64_t p = L->p[j]; p < L->p[j+1]; p++)
+        {
+            PCK (SLIP_mpq_set_z (*t1, L->x.mpz[p]));
+            PCK (SLIP_mpq_mul (*t2, *t1, SLIP_1D (z, j, mpq)));
+            PCK (SLIP_mpq_add (SLIP_1D (w2, L->i[p], mpq),
+                SLIP_1D (w2, L->i[p], mpq), *t2));
+        }
+    }
+
+    // compare: w1[i] (integer) == w2[i] (rational)
+    bool eq = true;
+    for (int64_t i = 0; i < n && eq; i++)
+    {
+        PCK (SLIP_mpq_set_z (*t1, SLIP_1D (w1, i, mpz)));
+        if (!mpq_equal (*t1, SLIP_1D (w2, i, mpq))) eq = false;
+    }
+    *ok = eq;
+
+done:
+    SLIP_matrix_free (&v,    option);
+    SLIP_matrix_free (&w1,   option);
+    SLIP_matrix_free (&y,    option);
+    SLIP_matrix_free (&z,    option);
+    SLIP_matrix_free (&w2,   option);
+    SLIP_matrix_free (&tmpq, option);
+    if (dkk_init) mpz_clear (dkk);
+    #undef PCK
+    return info;
+}
+
+//------------------------------------------------------------------------------
 // main
 //------------------------------------------------------------------------------
 
@@ -3689,19 +4174,40 @@ int main (int argc, char* argv[])
     // (distant push to the end + one REF forward solve) against a full
     // refactorization of the new basis.
     bool qsx = false, diag = false, bench = false, repl = false;
+    int64_t nreps = 0;      // -R alone: 0 (single, detailed).  -R<N>: N reps.
     int ai = 1;
     while (ai < argc && argv[ai][0] == '-')
     {
         if      (strcmp (argv[ai], "-Q") == 0) { qsx = true; ai++; }
         else if (strcmp (argv[ai], "-D") == 0) { diag = true; ai++; }
         else if (strcmp (argv[ai], "-B") == 0) { bench = true; ai++; }
-        else if (strcmp (argv[ai], "-R") == 0) { repl = true; ai++; }
+        else if (argv[ai][0] == '-' && argv[ai][1] == 'R')
+        {
+            // -R (one replacement, detailed report) or -R<N> (N sequential
+            // replacements, table + summary)
+            repl = true;
+            const char *tail = argv[ai] + 2;
+            if (*tail != '\0')
+            {
+                char *end = NULL;
+                long v = strtol (tail, &end, 10);
+                if (end == tail || *end != '\0' || v < 1)
+                {
+                    fprintf (stderr, "invalid -R count '%s' (need positive "
+                        "integer)\n", tail);
+                    FREE_WORKSPACE;
+                    return 0;
+                }
+                nreps = (int64_t) v;
+            }
+            ai++;
+        }
         else
         {
             fprintf (stderr, "unknown flag '%s'\n"
                 "usage: perm [-Q] [-D] [matrix_file [k]]\n"
                 "       perm -B [-Q] matrix_file [k m]\n"
-                "       perm -R [-Q] [matrix_file [col]]\n", argv[ai]);
+                "       perm -R[N] [-Q] [matrix_file [col]]\n", argv[ai]);
             FREE_WORKSPACE;
             return 0;
         }
@@ -3946,8 +4452,16 @@ int main (int argc, char* argv[])
             jc = ask_col (n);
             if (jc < 0) { FREE_WORKSPACE; return 0; }
         }
-        OK (bench_replace (A, L1, U1, rhos1, pinv1, S1->q, jc,
-            t_analyze1 + t_factor1, option, option2));
+        if (nreps > 0)
+        {
+            OK (bench_replace_seq (A, L1, U1, rhos1, pinv1, S1->q, jc, nreps,
+                t_analyze1 + t_factor1, option, option2));
+        }
+        else
+        {
+            OK (bench_replace (A, L1, U1, rhos1, pinv1, S1->q, jc,
+                t_analyze1 + t_factor1, option, option2));
+        }
         FREE_WORKSPACE;
         return 0;
     }
@@ -4136,6 +4650,22 @@ int main (int argc, char* argv[])
         {
             printf ("\nL' * D'^(-1) * U' reconstruction check skipped "
                 "(n = %"PRId64" > %d)\n", n, RECON_MAX_N);
+        }
+
+        // random-vector probe: PAQ * v == L' * D'^(-1) * U' * v (exact).
+        // Runs at any n and is not gated on RECON_MAX_N; skipped only when
+        // the update ended on a 2x2 block pivot, since the probe helper
+        // assumes a scalar diagonal D.
+        if (!blk_dense)
+        {
+            SLIP_matrix *PAQ_probe = NULL;
+            OK (SLIP_matrix_copy (&PAQ_probe, SLIP_CSC, SLIP_MPZ, PAQ, option));
+            bool probe_ok = false;
+            OK (probe_LDU_eq_M_csc (&probe_ok, L_s, U_s, rhos_s, PAQ_probe,
+                UINT64_C (0xC0FFEE1234567), option));
+            SLIP_matrix_free (&PAQ_probe, option);
+            printf ("Random-vector probe:"
+                " %s\n", probe_ok ? "MATCH" : "MISMATCH");
         }
 
         // dense and sparse updates must produce identical factors
