@@ -28,53 +28,61 @@ I = -I../Include -I../Source -I../../SuiteSparse_config -I../../COLAMD/Include -
 LDLIBS += -lm -lgmp -lmpfr -lcolamd -lamd -lsliplu
 CS = $(LDLIBS)
 
+BIN = bin
+OBJ = obj
+
+$(BIN):
+	mkdir -p $(BIN)
+
+$(OBJ):
+	mkdir -p $(OBJ)
 
 # Build all demo programs.  Nothing is run automatically; invoke a program
-# (e.g. ./perm) by hand once it is built.
-all: example example2 SLIPLU qsx_basis update_demo perm
+# (e.g. ./bin/perm) by hand once it is built.
+all: $(BIN)/example $(BIN)/example2 $(BIN)/SLIPLU $(BIN)/qsx_basis $(BIN)/update_demo $(BIN)/perm
 
 lib:
 	( cd ../Lib ; $(MAKE) )
 
 # Compile a source file into an object file.  Only sources whose .c (or the
 # headers/Makefile they depend on) changed are recompiled.
-%.o: %.c Makefile
+$(OBJ)/%.o: %.c Makefile | $(OBJ)
 	$(CC) $(CF) $(I) -c $< -o $@
 
 # Header dependencies: recompile the affected objects when a header changes.
-demos.o example2.o SLIPLU.o qsx_basis.o update_demo.o perm.o ordering_ab.o: demos.h
-slip_lu_update.o update_demo.o: slip_lu_update.h
+$(OBJ)/demos.o $(OBJ)/example2.o $(OBJ)/SLIPLU.o $(OBJ)/qsx_basis.o $(OBJ)/update_demo.o $(OBJ)/perm.o $(OBJ)/ordering_ab.o: demos.h
+$(OBJ)/slip_lu_update.o $(OBJ)/update_demo.o: slip_lu_update.h
 
 # Link the demo programs from their objects.  'lib' is an order-only
 # prerequisite (after the '|') so the library is kept up to date without
 # forcing the programs to relink on every invocation.
-example: example.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ example.o $(CS)
+$(BIN)/example: $(OBJ)/example.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/example.o $(CS)
 
-example2: example2.o demos.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ example2.o demos.o $(CS)
+$(BIN)/example2: $(OBJ)/example2.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/example2.o $(OBJ)/demos.o $(CS)
 
-SLIPLU: SLIPLU.o demos.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ SLIPLU.o demos.o $(CS)
+$(BIN)/SLIPLU: $(OBJ)/SLIPLU.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/SLIPLU.o $(OBJ)/demos.o $(CS)
 
-qsx_basis: qsx_basis.o demos.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ qsx_basis.o demos.o $(CS)
+$(BIN)/qsx_basis: $(OBJ)/qsx_basis.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/qsx_basis.o $(OBJ)/demos.o $(CS)
 
-update_demo: update_demo.o slip_lu_update.o demos.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ update_demo.o slip_lu_update.o demos.o $(CS)
+$(BIN)/update_demo: $(OBJ)/update_demo.o $(OBJ)/slip_lu_update.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/update_demo.o $(OBJ)/slip_lu_update.o $(OBJ)/demos.o $(CS)
 
-perm: perm.o demos.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ perm.o demos.o $(CS)
+$(BIN)/perm: $(OBJ)/perm.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/perm.o $(OBJ)/demos.o $(CS)
 
-ordering_ab: ordering_ab.o demos.o | lib
-	$(CC) $(LDFLAGS) $(CF) -o $@ ordering_ab.o demos.o $(CS)
+$(BIN)/ordering_ab: $(OBJ)/ordering_ab.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/ordering_ab.o $(OBJ)/demos.o $(CS)
 
 clean:
-	- $(RM) *.o
+	- $(RM) -r $(OBJ) *.o
 
 purge: distclean
 
 distclean: clean
-	- $(RM) -r example example2 example3 example4 example5 SLIPLU qsx_basis update_demo perm ordering_ab *.a *.dSYM *.obj *.dll
+	- $(RM) -r $(BIN) *.a *.dSYM *.obj *.dll
 
 .PHONY: default all lib clean purge distclean

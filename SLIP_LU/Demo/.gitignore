@@ -1,7 +1,4 @@
-# Ignore these files:
-example
-example2
-example3
-example4
-example5
-SLIPLU
+# Ignore built binaries:
+bin/
+obj/
+*.o
