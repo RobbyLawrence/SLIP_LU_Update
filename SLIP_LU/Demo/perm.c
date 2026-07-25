@@ -238,11 +238,6 @@ done:
 
 /* Build the diagonal matrix D of PAQ = L * D^(-1) * U from the pivots:
  * D(k,k) = rhos[k-1] * rhos[k], with rhos[-1] = 1.
- *
- * If a 2x2 block pivot was used at positions {kb, kb+1} (kb >= 0; see
- * apdpu), D is block diagonal there: the 2x2 block is rhos[kb-1] * B',
- * where B' is the block stored in rows/columns {kb, kb+1} of the dense
- * factor Lb.  Pass kb = -1 (Lb ignored) for the all-scalar D.
  */
 static SLIP_info build_D (SLIP_matrix **D_handle, const SLIP_matrix *rhos,
     int64_t n, int64_t kb, const SLIP_matrix *Lb, const SLIP_options *option)
@@ -699,11 +694,6 @@ done:
 
 /* Update the CSC factors of PAQ (as returned by SLIP_LU_factorize) to the
  * factors of PAQ' with adjacent columns kc and kc+1 (0-based) swapped.
- *
- * Same minor algebra as the dense apcpu(), but the two "data" slices come
- * from the BACK-SOLVE TRICK -- inverting one stored IPGE step instead of
- * replaying kc of them -- so only stored entries of L, U, rhos are touched
- * (never PAQ) and the work is O(nnz of the affected columns/rows):
  *
  *   new L column kc (i >= kc+1; also gives the diagonal = rho'[kc]):
  *      L'(i,kc) = ( rho[kc-1]*L(i,kc+1) + L(i,kc)*U(kc,kc+1) ) / rho[kc]
@@ -2393,6 +2383,141 @@ done:
 }
 
 //------------------------------------------------------------------------------
+// distant push, DENSE variant (mirror of distant_push_inplace via apdpu/apcpu)
+//------------------------------------------------------------------------------
+
+/* Same mixed distant push k -> m as distant_push_inplace, but the chain runs
+ * on DENSE MPZ factors with the per-step primitives apdpu (diagonal) and
+ * apcpu (column).  Every step tries apdpu first; on SLIP_SINGULAR it falls
+ * back to apcpu (parallel to dyn_push_step / dyn_colpush_step in the sparse
+ * version).  apcpu needs PAQ_new, so PAQ_dense is a working copy of the
+ * current PAQ that is swapped in place at every step (symmetrically for a
+ * diagonal push, columns only for a column push) BEFORE the primitive
+ * consumes it.  The output factors are dense; callers convert to CSC (which
+ * filters stored zeros) if desired.  rowmap_out reports the row cycle from
+ * the diagonal-push steps (identity if all steps were column pushes).
+ */
+static SLIP_info distant_push_dense (SLIP_matrix **L_out, SLIP_matrix **U_out,
+    SLIP_matrix **rhos_out, SLIP_matrix *L_in, SLIP_matrix *U_in,
+    SLIP_matrix *rhos_in, SLIP_matrix *PAQ_dense, int64_t k, int64_t m,
+    bool mixed, int64_t *rowmap_out, int64_t *ncolpush_out,
+    int64_t *blocked_at, const SLIP_options *option)
+{
+    SLIP_info info = SLIP_OK;
+    SLIP_matrix *L = NULL, *U = NULL, *rhos = NULL;
+    SLIP_matrix *Ln = NULL, *Un = NULL, *rn = NULL;
+    int64_t *rowmap = NULL;
+    int64_t n = L_in->n;
+
+    if (blocked_at   != NULL) *blocked_at   = -1;
+    if (ncolpush_out != NULL) *ncolpush_out = 0;
+    if (k < 0 || k >= n || m < 0 || m >= n || k == m || (mixed && k > m))
+    {
+        return SLIP_INCORRECT_INPUT;
+    }
+
+    #define DDK(method) { info = (method); if (info != SLIP_OK) goto done; }
+
+    DDK (SLIP_matrix_copy (&L,    SLIP_DENSE, SLIP_MPZ, L_in,    option));
+    DDK (SLIP_matrix_copy (&U,    SLIP_DENSE, SLIP_MPZ, U_in,    option));
+    DDK (SLIP_matrix_copy (&rhos, SLIP_DENSE, SLIP_MPZ, rhos_in, option));
+
+    rowmap = (int64_t *) SLIP_malloc (n * sizeof (int64_t));
+    if (rowmap == NULL) { info = SLIP_OUT_OF_MEMORY; goto done; }
+    for (int64_t i = 0; i < n; i++) rowmap[i] = i;
+
+    int64_t step   = (k < m) ? 1 : -1;
+    int64_t nsteps = (k < m) ? (m - k) : (k - m);
+    int64_t j      = (k < m) ? k : k - 1;   // first adjacent push position
+    int64_t ncol   = 0;
+
+    for (int64_t s = 0; s < nsteps; s++)
+    {
+        if (mixed)
+        {
+            // prefer the diagonal push (matches distant_push_inplace default);
+            // apdpu with used_block = NULL fails SLIP_SINGULAR on a zero pivot
+            info = apdpu (&Ln, &Un, &rn, L, U, rhos, j, NULL, option);
+            if (info == SLIP_OK)
+            {
+                swap_cols (PAQ_dense, j, j + 1);
+                swap_rows (PAQ_dense, j, j + 1);
+                for (int64_t i = 0; i < n; i++)
+                {
+                    if      (rowmap[i] == j)     rowmap[i] = j + 1;
+                    else if (rowmap[i] == j + 1) rowmap[i] = j;
+                }
+                SLIP_matrix_free (&L,    option); L    = Ln; Ln = NULL;
+                SLIP_matrix_free (&U,    option); U    = Un; Un = NULL;
+                SLIP_matrix_free (&rhos, option); rhos = rn; rn = NULL;
+                j += step;
+                continue;
+            }
+            if (info != SLIP_SINGULAR) goto done;
+            info = SLIP_OK;                     // fall through to the column push
+        }
+        // column push: swap PAQ columns, then apcpu consumes the swapped state
+        swap_cols (PAQ_dense, j, j + 1);
+        info = apcpu (&Ln, &Un, &rn, L, U, rhos, PAQ_dense, j, option);
+        if (info == SLIP_SINGULAR)
+        {
+            if (blocked_at != NULL) *blocked_at = j;
+            goto done;
+        }
+        DDK (info);
+        ncol++;
+        SLIP_matrix_free (&L,    option); L    = Ln; Ln = NULL;
+        SLIP_matrix_free (&U,    option); U    = Un; Un = NULL;
+        SLIP_matrix_free (&rhos, option); rhos = rn; rn = NULL;
+        j += step;
+    }
+
+    if (rowmap_out   != NULL) memcpy (rowmap_out, rowmap, n * sizeof (int64_t));
+    if (ncolpush_out != NULL) *ncolpush_out = ncol;
+    *L_out = L;       L    = NULL;
+    *U_out = U;       U    = NULL;
+    *rhos_out = rhos; rhos = NULL;
+
+done:
+    SLIP_matrix_free (&L,    option);
+    SLIP_matrix_free (&U,    option);
+    SLIP_matrix_free (&rhos, option);
+    SLIP_matrix_free (&Ln,   option);
+    SLIP_matrix_free (&Un,   option);
+    SLIP_matrix_free (&rn,   option);
+    SLIP_FREE (rowmap);
+    #undef DDK
+    return info;
+}
+
+/* Build a dense PAQ = P * A * Q from CSC A and permutations pinv, q, in the
+ * convention (P*A*Q)[pinv[i]][c] = A[i][q[c]] used everywhere else in this
+ * file.  The output is n-by-n dense MPZ (fully allocated). */
+static SLIP_info build_paq_dense (SLIP_matrix **PAQ_handle,
+    const SLIP_matrix *A, const int64_t *pinv, const int64_t *q,
+    const SLIP_options *option)
+{
+    SLIP_info info = SLIP_OK;
+    int64_t n = A->n;
+    SLIP_matrix *PAQ = NULL;
+    info = SLIP_matrix_allocate (&PAQ, SLIP_DENSE, SLIP_MPZ, n, n, n * n,
+        false, true, option);
+    if (info != SLIP_OK) return info;
+    for (int64_t c = 0; c < n; c++)
+    {
+        int64_t j = q[c];
+        for (int64_t p = A->p[j]; p < A->p[j+1]; p++)
+        {
+            info = SLIP_mpz_set (SLIP_2D (PAQ, pinv[A->i[p]], c, mpz),
+                A->x.mpz[p]);
+            if (info != SLIP_OK) { SLIP_matrix_free (&PAQ, option); return info; }
+        }
+    }
+    *PAQ_handle = PAQ;
+    return SLIP_OK;
+}
+
+//------------------------------------------------------------------------------
 // sparse PAQ' construction
 //------------------------------------------------------------------------------
 
@@ -2617,13 +2742,15 @@ static SLIP_info ref_solve_last (mpz_t *x, int64_t *h, const SLIP_matrix *L,
  */
 static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     SLIP_matrix *U1, SLIP_matrix *rhos1, const int64_t *pinv1,
-    const int64_t *q1, int64_t jcol, double t_base, SLIP_options *option,
-    SLIP_options *option2)
+    const int64_t *q1, int64_t jcol, bool use_dense, double t_base,
+    SLIP_options *option, SLIP_options *option2)
 {
     SLIP_info info = SLIP_OK;
     int64_t n = A->n;
     SLIP_matrix *v = NULL, *xd = NULL, *Ap = NULL, *Mv = NULL;
     SLIP_matrix *L_s = NULL, *U_s = NULL, *rhos_s = NULL, *Un = NULL;
+    SLIP_matrix *L1_d = NULL, *U1_d = NULL, *PAQ_d = NULL;   // dense chain scratch
+    SLIP_matrix *L_d = NULL, *U_d = NULL;                    // dense chain output
     SLIP_LU_analysis *Sr = NULL, *Sv = NULL;
     SLIP_matrix *Lr = NULL, *Ur = NULL, *rr = NULL;     // refactorization
     SLIP_matrix *Lv = NULL, *Uv = NULL, *rv = NULL;     // fixed-order verify
@@ -2644,6 +2771,9 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     printf ("\nReplacing basis column %"PRId64" (position %"PRId64" of PAQ) "
         "with a dense column\n(deterministic pseudorandom entries in "
         "{-9..-1, 1..9}).\n", jcol + 1, cpos + 1);
+    printf ("Push chain: %s (apdpu/apcpu on %s factors).\n",
+        use_dense ? "DENSE" : "sparse",
+        use_dense ? "dense MPZ" : "dynamic CSC");
 
     // the incoming dense column and the replaced basis B'
     RCK (SLIP_matrix_allocate (&v, SLIP_DENSE, SLIP_MPZ, n, 1, n,
@@ -2673,18 +2803,44 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
     tic = clock ();
     if (cpos < n - 1)
     {
-        info = distant_push_inplace (&L_s, &U_s, &rhos_s, L1, U1, rhos1,
-            cpos, n - 1, true, rowmap, &ncolpush, NULL, &blocked_at, option);
-        if (info == SLIP_SINGULAR)
+        if (use_dense)
         {
-            // unreachable for a nonsingular B (the mixed chain always has
-            // a feasible push); kept as a defensive fallback
-            skip = "the push chain hits a zero pivot";
-            info = SLIP_OK;
+            // dense chain: build dense L, U, PAQ once, run apdpu/apcpu chain,
+            // convert output back to CSC (SLIP_matrix_copy filters stored zeros)
+            RCK (SLIP_matrix_copy (&L1_d, SLIP_DENSE, SLIP_MPZ, L1, option));
+            RCK (SLIP_matrix_copy (&U1_d, SLIP_DENSE, SLIP_MPZ, U1, option));
+            RCK (build_paq_dense (&PAQ_d, A, pinv1, q1, option));
+            info = distant_push_dense (&L_d, &U_d, &rhos_s, L1_d, U1_d, rhos1,
+                PAQ_d, cpos, n - 1, true, rowmap, &ncolpush, &blocked_at,
+                option);
+            if (info == SLIP_SINGULAR)
+            {
+                skip = "the push chain hits a zero pivot";
+                info = SLIP_OK;
+            }
+            else
+            {
+                RCK (info);
+                RCK (SLIP_matrix_copy (&L_s, SLIP_CSC, SLIP_MPZ, L_d, option));
+                RCK (SLIP_matrix_copy (&U_s, SLIP_CSC, SLIP_MPZ, U_d, option));
+            }
         }
         else
         {
-            RCK (info);
+            info = distant_push_inplace (&L_s, &U_s, &rhos_s, L1, U1, rhos1,
+                cpos, n - 1, true, rowmap, &ncolpush, NULL, &blocked_at,
+                option);
+            if (info == SLIP_SINGULAR)
+            {
+                // unreachable for a nonsingular B (the mixed chain always has
+                // a feasible push); kept as a defensive fallback
+                skip = "the push chain hits a zero pivot";
+                info = SLIP_OK;
+            }
+            else
+            {
+                RCK (info);
+            }
         }
     }
     else        // the leaving column is already last: nothing to push
@@ -2763,6 +2919,7 @@ static SLIP_info bench_replace (SLIP_matrix *A, SLIP_matrix *L1,
 
     // refactorization
     option->order = SLIP_NO_ORDERING;
+    option->pivot = SLIP_DIAGONAL;
     tic = clock ();
     RCK (SLIP_LU_analyze (&Sr, Ap, option));
     info = SLIP_LU_factorize (&Lr, &Ur, &rr, &pr, Ap, Sr, option);
@@ -2922,6 +3079,11 @@ done:
     SLIP_matrix_free (&U_s, option);
     SLIP_matrix_free (&rhos_s, option);
     SLIP_matrix_free (&Un, option);
+    SLIP_matrix_free (&L1_d, option);
+    SLIP_matrix_free (&U1_d, option);
+    SLIP_matrix_free (&PAQ_d, option);
+    SLIP_matrix_free (&L_d, option);
+    SLIP_matrix_free (&U_d, option);
     SLIP_matrix_free (&Lr, option);
     SLIP_matrix_free (&Ur, option);
     SLIP_matrix_free (&rr, option);
@@ -2952,8 +3114,8 @@ done:
  * verdict) and a summary at the end. */
 static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
     SLIP_matrix *U1, SLIP_matrix *rhos1, const int64_t *pinv1,
-    const int64_t *q1, int64_t jcol_start, int64_t nreps, double t_base,
-    SLIP_options *option, SLIP_options *option2)
+    const int64_t *q1, int64_t jcol_start, int64_t nreps, bool use_dense,
+    double t_base, SLIP_options *option, SLIP_options *option2)
 {
     SLIP_info info = SLIP_OK;
     int64_t n = A->n;
@@ -2974,6 +3136,9 @@ static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
     SLIP_matrix *Lr = NULL, *Ur = NULL, *rr = NULL;
     SLIP_LU_analysis *Sr = NULL;
     int64_t *pr = NULL;
+    // dense chain scratch (unused unless use_dense is true)
+    SLIP_matrix *L_d_in = NULL, *U_d_in = NULL, *PAQ_d = NULL;
+    SLIP_matrix *L_d_out = NULL, *U_d_out = NULL;
 
     #define SQK(method) { info = (method); if (info != SLIP_OK) goto done; }
 
@@ -3013,6 +3178,9 @@ static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
         "---------------------\n");
     printf ("Sequential column replacement: %"PRId64" iterations starting at "
         "column %"PRId64"\n", nreps, jcol_start + 1);
+    printf ("Push chain: %s (apdpu/apcpu on %s factors).\n",
+        use_dense ? "DENSE" : "sparse",
+        use_dense ? "dense MPZ" : "dynamic CSC");
     printf ("(baseline factorization of B took %.6f s; L+U = %"PRId64")\n",
         t_base, fb);
     printf ("-----------------------------------------------------------------"
@@ -3047,10 +3215,37 @@ static SLIP_info bench_replace_seq (SLIP_matrix *A, SLIP_matrix *L1,
         bool singular = false;
         if (cpos < n - 1)
         {
-            info = distant_push_inplace (&L_next, &U_next, &rhos_next, L, U,
-                rhos, cpos, n - 1, true, rowmap, NULL, NULL, NULL, option);
-            if (info == SLIP_SINGULAR) { singular = true; info = SLIP_OK; }
-            else SQK (info);
+            if (use_dense)
+            {
+                SQK (SLIP_matrix_copy (&L_d_in, SLIP_DENSE, SLIP_MPZ, L, option));
+                SQK (SLIP_matrix_copy (&U_d_in, SLIP_DENSE, SLIP_MPZ, U, option));
+                SQK (build_paq_dense (&PAQ_d, A_cur, pinv, q, option));
+                info = distant_push_dense (&L_d_out, &U_d_out, &rhos_next,
+                    L_d_in, U_d_in, rhos, PAQ_d, cpos, n - 1, true,
+                    rowmap, NULL, NULL, option);
+                if (info == SLIP_SINGULAR) { singular = true; info = SLIP_OK; }
+                else
+                {
+                    SQK (info);
+                    SQK (SLIP_matrix_copy (&L_next, SLIP_CSC, SLIP_MPZ,
+                        L_d_out, option));
+                    SQK (SLIP_matrix_copy (&U_next, SLIP_CSC, SLIP_MPZ,
+                        U_d_out, option));
+                }
+                SLIP_matrix_free (&L_d_in,  option);
+                SLIP_matrix_free (&U_d_in,  option);
+                SLIP_matrix_free (&PAQ_d,   option);
+                SLIP_matrix_free (&L_d_out, option);
+                SLIP_matrix_free (&U_d_out, option);
+            }
+            else
+            {
+                info = distant_push_inplace (&L_next, &U_next, &rhos_next,
+                    L, U, rhos, cpos, n - 1, true, rowmap, NULL, NULL, NULL,
+                    option);
+                if (info == SLIP_SINGULAR) { singular = true; info = SLIP_OK; }
+                else SQK (info);
+            }
         }
         else
         {
@@ -3243,6 +3438,11 @@ done:
     SLIP_matrix_free (&Lr,        option);
     SLIP_matrix_free (&Ur,        option);
     SLIP_matrix_free (&rr,        option);
+    SLIP_matrix_free (&L_d_in,    option);
+    SLIP_matrix_free (&U_d_in,    option);
+    SLIP_matrix_free (&PAQ_d,     option);
+    SLIP_matrix_free (&L_d_out,   option);
+    SLIP_matrix_free (&U_d_out,   option);
     SLIP_FREE (pinv);
     SLIP_FREE (q);
     SLIP_FREE (pinv_next);
@@ -3641,7 +3841,7 @@ int main (int argc, char* argv[])
     // one basis column with a dense column and benchmarks the update
     // (distant push to the end + one REF forward solve) against a full
     // refactorization of the new basis.
-    bool qsx = false, diag = false, repl = false;
+    bool qsx = false, diag = false, repl = false, repl_dense = false;
     int64_t nreps = 0;      // -R alone: 0 (single, detailed).  -R<N>: N reps.
     int ai = 1;
     while (ai < argc && argv[ai][0] == '-')
@@ -3650,10 +3850,15 @@ int main (int argc, char* argv[])
         else if (strcmp (argv[ai], "-D") == 0) { diag = true; ai++; }
         else if (argv[ai][0] == '-' && argv[ai][1] == 'R')
         {
-            // -R (one replacement, detailed report) or -R<N> (N sequential
-            // replacements, table + summary)
+            // -R  / -RN  : sparse chain (dyn overlays), 1 or N replacements
+            // -Rd / -RdN : dense chain  (apdpu/apcpu),  1 or N replacements
             repl = true;
             const char *tail = argv[ai] + 2;
+            if (*tail == 'd' || *tail == 'D')
+            {
+                repl_dense = true;
+                tail++;
+            }
             if (*tail != '\0')
             {
                 char *end = NULL;
@@ -3673,7 +3878,7 @@ int main (int argc, char* argv[])
         {
             fprintf (stderr, "unknown flag '%s'\n"
                 "usage: perm [-Q] [-D] [matrix_file [k]]\n"
-                "       perm -R[N] [-Q] [matrix_file [col]]\n", argv[ai]);
+                "       perm -R[d][N] [-Q] [matrix_file [col]]\n", argv[ai]);
             FREE_WORKSPACE;
             return 0;
         }
@@ -3830,11 +4035,11 @@ int main (int argc, char* argv[])
         if (nreps > 0)
         {
             OK (bench_replace_seq (A, L1, U1, rhos1, pinv1, S1->q, jc, nreps,
-                t_analyze1 + t_factor1, option, option2));
+                repl_dense, t_analyze1 + t_factor1, option, option2));
         }
         else
         {
-            OK (bench_replace (A, L1, U1, rhos1, pinv1, S1->q, jc,
+            OK (bench_replace (A, L1, U1, rhos1, pinv1, S1->q, jc, repl_dense,
                 t_analyze1 + t_factor1, option, option2));
         }
         FREE_WORKSPACE;

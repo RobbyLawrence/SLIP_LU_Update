@@ -1,0 +1,371 @@
+=====================
+sLTDpushV3_L.m
+=====================
+
+function [Ftmp, mu_L, h_L] = sLTDpushV3_L(k, L, rho, Ftmp, rhoprime, s_Lk, s_Uk, mu_L, h_L)
+
+    n = size(L, 1);
+    % begin backtracking
+    if s_Uk == 0
+        rows = colrows(L, k+1, k+2, n);
+        for i = rows(:).'
+            disp("LBacktrack: Setting Ftmp("+i+","+(k+1)+") = (rp("+(k-1)+")*L("+i+","+(k+1)+")) / r("+k+") = ( "+at1(rhoprime,k-1)+" * "+L(i,k+1)+" ) / "+at1(rho,k)+" = "+((at1(rhoprime,k-1)*L(i,k+1)) / at1(rho,k)));
+            Ftmp(i, k+1) = (at1(rhoprime, k-1) * L(i, k+1)) / at1(rho, k);
+        end
+    else
+        rowsL  = colrows(L, k+1, k+2, n);
+        rowsMu = find(mu_L);  rowsMu = rowsMu(rowsMu >= k+2 & rowsMu <= n);
+        rows   = union(rowsL(:), rowsMu(:));
+        for i = rows(:).'
+            if h_L(i) ~= k-1
+                disp("LHistory: Setting mu("+i+") = (rp("+(k-1)+")*mu("+i+")) / rp(h("+i+")) = (rp("+(k-1)+")*mu("+i+")) / rp("+h_L(i)+") = ( "+at1(rhoprime,k-1)+" * "+mu_L(i)+" ) / "+at1(rhoprime,h_L(i))+" = "+((at1(rhoprime,k-1)*mu_L(i)) / at1(rhoprime,h_L(i))));
+                mu_L(i) = (at1(rhoprime, k-1) * mu_L(i)) / at1(rhoprime, h_L(i));
+                h_L(i)  = k-1;
+            end
+            disp("LBacktrack: Setting Ftmp("+i+","+(k+1)+") = (rp("+(k-1)+")*L("+i+","+(k+1)+") + sUk*mu("+i+")) / r("+k+") = ( "+at1(rhoprime,k-1)+" * "+L(i,k+1)+" + "+s_Uk+" * "+mu_L(i)+" ) / "+at1(rho,k)+" = "+((at1(rhoprime,k-1)*L(i,k+1) + s_Uk*mu_L(i)) / at1(rho,k)));
+            Ftmp(i, k+1) = (at1(rhoprime, k-1) * L(i, k+1) + s_Uk * mu_L(i)) / at1(rho, k);
+        end
+    end
+
+    % begin RwSOP  --  only when there is a next row (k+2) in bounds
+    if k+2 <= n
+        if s_Lk == 0
+            j = k + 2;
+            disp("LRwSOP: Setting mu("+j+") = (rp("+k+")*mu("+j+")) / rp(h("+j+")) = (rp("+k+")*mu("+j+")) / rp("+h_L(j)+") = ( "+at1(rhoprime,k)+" * "+mu_L(j)+" ) / "+at1(rhoprime,h_L(j))+" = "+((at1(rhoprime,k)*mu_L(j)) / at1(rhoprime,h_L(j))));
+            mu_L(j) = (at1(rhoprime, k) * mu_L(j)) / at1(rhoprime, h_L(j));
+            h_L(j)  = k;
+        else
+            j = k + 2;
+            if h_L(j) ~= k-1
+                disp("LHistory: Setting mu("+j+") = (rp("+(k-1)+")*mu("+j+")) / rp(h("+j+")) = (rp("+(k-1)+")*mu("+j+")) / rp("+h_L(j)+") = ( "+at1(rhoprime,k-1)+" * "+mu_L(j)+" ) / "+at1(rhoprime,h_L(j))+" = "+((at1(rhoprime,k-1)*mu_L(j)) / at1(rhoprime,h_L(j))));
+                mu_L(j) = (at1(rhoprime, k-1) * mu_L(j)) / at1(rhoprime, h_L(j));
+                h_L(j)  = k-1;
+            end
+            newLj = Ftmp(j, k+1);
+            disp("LRwSOP: Setting mu("+j+") = (rp("+k+")*mu("+j+") - sLk*Ftmp("+j+","+(k+1)+")) / rp("+(k-1)+") = ( "+at1(rhoprime,k)+" * "+mu_L(j)+" - "+s_Lk+" * "+newLj+" ) / "+at1(rhoprime,k-1)+" = "+((at1(rhoprime,k)*mu_L(j) - s_Lk*newLj) / at1(rhoprime,k-1)));
+            mu_L(j) = (at1(rhoprime, k) * mu_L(j) - s_Lk * newLj) / at1(rhoprime, k-1);
+            h_L(j)  = k;
+
+            rows = colrows(L, k+1, k+3, n);
+            for i = rows(:).'
+                if h_L(i) ~= k-1
+                    disp("LHistory: Setting mu("+i+") = (rp("+(k-1)+")*mu("+i+")) / rp(h("+i+")) = (rp("+(k-1)+")*mu("+i+")) / rp("+h_L(i)+") = ( "+at1(rhoprime,k-1)+" * "+mu_L(i)+" ) / "+at1(rhoprime,h_L(i))+" = "+((at1(rhoprime,k-1)*mu_L(i)) / at1(rhoprime,h_L(i))));
+                    mu_L(i) = (at1(rhoprime, k-1) * mu_L(i)) / at1(rhoprime, h_L(i));
+                    h_L(i)  = k-1;
+                end
+                newLi = Ftmp(i, k+1);
+                disp("LRwSOP: Setting mu("+i+") = (rp("+k+")*mu("+i+") - sLk*Ftmp("+i+","+(k+1)+")) / rp("+(k-1)+") = ( "+at1(rhoprime,k)+" * "+mu_L(i)+" - "+s_Lk+" * "+newLi+" ) / "+at1(rhoprime,k-1)+" = "+((at1(rhoprime,k)*mu_L(i) - s_Lk*newLi) / at1(rhoprime,k-1)));
+                mu_L(i) = (at1(rhoprime, k) * mu_L(i) - s_Lk * newLi) / at1(rhoprime, k-1);
+                h_L(i)  = k;
+            end
+        end
+    end
+end
+
+function v = at1(vec, idx)
+    if idx == 0
+        v = 1;
+    else
+        v = vec(idx);
+    end
+end
+
+function r = colrows(L, col, lo, hi)
+    r = find(L(:, col));
+    r = r(r >= lo & r <= hi);
+end
+
+==================
+sLTDpushV3_U.m
+==================
+function [Ftmp, mu_U, h_U] = sLTDpushV3_U(k, Ut, rho, Ftmp, rhoprime, s_Lk, s_Uk, mu_U, h_U)
+    n = size(Ut, 1);
+    % begin backtracking
+    if s_Lk == 0
+        rows = colrows(Ut, k+1, k+2, n);
+        for i = rows(:).'
+            disp("Backtrack: Setting Ftmp("+(k+1)+","+i+") = (rp("+(k-1)+")*Ut("+i+","+(k+1)+")) / r("+k+") = ( "+at1(rhoprime,k-1)+" * "+Ut(i,k+1)+" ) / "+at1(rho,k)+" = "+((at1(rhoprime,k-1)*Ut(i,k+1)) / at1(rho,k)));
+            Ftmp(k+1, i) = (at1(rhoprime, k-1) * Ut(i, k+1)) / at1(rho, k);
+        end
+    else
+        rowsL  = colrows(Ut, k+1, k+2, n);
+        rowsMu = find(mu_U);  rowsMu = rowsMu(rowsMu >= k+2 & rowsMu <= n);
+        rows   = union(rowsL(:), rowsMu(:));
+        for i = rows(:).'
+            if h_U(i) ~= k-1
+                disp("History: Setting mu_U("+i+") = (rp("+(k-1)+")*mu_U("+i+")) / rp(h_U("+i+")) = (rp("+(k-1)+")*mu_U("+i+")) / rp("+h_U(i)+") = ( "+at1(rhoprime,k-1)+" * "+mu_U(i)+" ) / "+at1(rhoprime,h_U(i))+" = "+((at1(rhoprime,k-1)*mu_U(i)) / at1(rhoprime,h_U(i))));
+                mu_U(i) = (at1(rhoprime, k-1) * mu_U(i)) / at1(rhoprime, h_U(i));
+                h_U(i)  = k-1;
+            end
+            disp("Backtrack: Setting Ftmp("+(k+1)+","+i+") = (rp("+(k-1)+")*Ut("+i+","+(k+1)+") + s_Lk*mu_U("+i+")) / r("+k+") = ( "+at1(rhoprime,k-1)+" * "+Ut(i,k+1)+" + "+s_Lk+" * "+mu_U(i)+" ) / "+at1(rho,k)+" = "+((at1(rhoprime,k-1)*Ut(i,k+1) + s_Lk*mu_U(i)) / at1(rho,k)));
+            Ftmp(k+1, i) = (at1(rhoprime, k-1) * Ut(i, k+1) + s_Lk * mu_U(i)) / at1(rho, k);
+        end
+    end
+
+    % begin RwSOP  --  only when there is a next row (k+2) in bounds
+    if k+2 <= n
+        if s_Uk == 0
+            j = k + 2;
+            disp("RwSOP: Setting mu_U("+j+") = (rp("+k+")*mu_U("+j+")) / rp(h_U("+j+")) = (rp("+k+")*mu_U("+j+")) / rp("+h_U(j)+") = ( "+at1(rhoprime,k)+" * "+mu_U(j)+" ) / "+at1(rhoprime,h_U(j))+" = "+((at1(rhoprime,k)*mu_U(j)) / at1(rhoprime,h_U(j))));
+            mu_U(j) = (at1(rhoprime, k) * mu_U(j)) / at1(rhoprime, h_U(j));
+            h_U(j)  = k;
+        else
+            j = k + 2;
+            if h_U(j) ~= k-1
+                disp("History: Setting mu_U("+j+") = (rp("+(k-1)+")*mu_U("+j+")) / rp(h_U("+j+")) = (rp("+(k-1)+")*mu_U("+j+")) / rp("+h_U(j)+") = ( "+at1(rhoprime,k-1)+" * "+mu_U(j)+" ) / "+at1(rhoprime,h_U(j))+" = "+((at1(rhoprime,k-1)*mu_U(j)) / at1(rhoprime,h_U(j))));
+                mu_U(j) = (at1(rhoprime, k-1) * mu_U(j)) / at1(rhoprime, h_U(j));
+                h_U(j)  = k-1;
+            end
+            newLj = Ftmp(k+1, j);
+            disp("RwSOP: Setting mu_U("+j+") = (rp("+k+")*mu_U("+j+") - s_Uk*newLj) / rp("+(k-1)+")   [newLj = Ftmp("+(k+1)+","+j+")] = ( "+at1(rhoprime,k)+" * "+mu_U(j)+" - "+s_Uk+" * "+newLj+" ) / "+at1(rhoprime,k-1)+" = "+((at1(rhoprime,k)*mu_U(j) - s_Uk*newLj) / at1(rhoprime,k-1)));
+            mu_U(j) = (at1(rhoprime, k) * mu_U(j) - s_Uk * newLj) / at1(rhoprime, k-1);
+            h_U(j)  = k;
+
+            rows = colrows(Ut, k+1, k+3, n);
+            for i = rows(:).'
+                if h_U(i) ~= k-1
+                    disp("History: Setting mu_U("+i+") = (rp("+(k-1)+")*mu_U("+i+")) / rp(h_U("+i+")) = (rp("+(k-1)+")*mu_U("+i+")) / rp("+h_U(i)+") = ( "+at1(rhoprime,k-1)+" * "+mu_U(i)+" ) / "+at1(rhoprime,h_U(i))+" = "+((at1(rhoprime,k-1)*mu_U(i)) / at1(rhoprime,h_U(i))));
+                    mu_U(i) = (at1(rhoprime, k-1) * mu_U(i)) / at1(rhoprime, h_U(i));
+                    h_U(i)  = k-1;
+                end
+                newLi = Ftmp(k+1, i);
+                disp("RwSOP: Setting mu_U("+i+") = (rp("+k+")*mu_U("+i+") - s_Uk*newLi) / rp("+(k-1)+")   [newLi = Ftmp("+(k+1)+","+i+")] = ( "+at1(rhoprime,k)+" * "+mu_U(i)+" - "+s_Uk+" * "+newLi+" ) / "+at1(rhoprime,k-1)+" = "+((at1(rhoprime,k)*mu_U(i) - s_Uk*newLi) / at1(rhoprime,k-1)));
+                mu_U(i) = (at1(rhoprime, k) * mu_U(i) - s_Uk * newLi) / at1(rhoprime, k-1);
+                h_U(i)  = k;
+            end
+        end
+    end
+end
+
+function v = at1(vec, idx)
+    if idx == 0
+        v = 1;
+    else
+        v = vec(idx);
+    end
+end
+
+function r = colrows(L, col, lo, hi)
+    r = find(L(:, col));
+    r = r(r >= lo & r <= hi);
+end
+
+==================
+sDIPPushAndSwap.m
+==================
+function [Ftmp, P, Q] = sDIPPushAndSwap(K, F)
+% Pushes pivot K to the end via a chain of diagonal / column pushes.
+% Fupdated = P * Ftmp * Q equals the frame of the fully-permuted A.
+    L  = lower(F);
+    U  = upper(F);
+    n  = size(L, 1);
+    Ut = U.';
+    rho      = diag(L);
+    rhoprime = zeros(n, 1);
+    rhoprime(1:K-1) = rho(1:K-1);
+
+    Ftmp = zeros(n, n);
+    disp("Init: Ftmp(:,1:"+(K-1)+") = L(:,1:"+(K-1)+")");
+    Ftmp(:, 1:(K-1)) = L(:, 1:(K-1));
+    disp("Init: Ftmp(1:"+(K-1)+",:) = U(1:"+(K-1)+",:)");
+    Ftmp(1:(K-1), :) = U(1:(K-1), :);
+
+    mu_L = L(:, K);       h_L = ones(n, 1) * (K-1);
+    mu_U = Ut(:, K);      h_U = ones(n, 1) * (K-1);
+
+    P = eye(n);
+    Q = eye(n);
+
+    % committedU(j) is true iff a prior col push wrote Ftmp(K, j) with an
+    % authoritative value that later diag-push post-writes must not clobber.
+    committedU = false(n, 1);
+
+    for k = K:(n-1)
+        s_Lk = mu_L(k+1);
+        s_Uk = mu_U(k+1);
+
+        if (at1(rhoprime, k-1) * at1(rho, k+1) + s_Lk * s_Uk ~= 0)
+            % ---- Diagonal push ----
+            rhoprime(k) = (at1(rhoprime, k-1) * rho(k+1) + s_Lk * s_Uk) / rho(k);
+            disp("Diag k="+k+": Ftmp("+(k+1)+","+(k+1)+")=rp("+k+")="+rhoprime(k));
+            Ftmp(k+1, k+1) = rhoprime(k);
+            disp("Diag k="+k+": Ftmp("+(k+1)+","+K+")=s_Lk="+s_Lk);
+            Ftmp(k+1, K)   = s_Lk;
+            if ~committedU(k+1)
+                disp("Diag k="+k+": Ftmp("+K+","+(k+1)+")=s_Uk="+s_Uk);
+                Ftmp(K, k+1) = s_Uk;
+            else
+                disp("Diag k="+k+": SKIP Ftmp("+K+","+(k+1)+") (committed by col push)");
+            end
+
+            [Ftmp, mu_L, h_L] = sLTDpushV3_L(k, L,  rho, Ftmp, rhoprime, s_Lk, s_Uk, mu_L, h_L);
+            [Ftmp, mu_U, h_U] = sLTDpushV3_U(k, Ut, rho, Ftmp, rhoprime, s_Lk, s_Uk, mu_U, h_U);
+
+            if k+2 <= n
+                disp("Diag k="+k+": Ftmp("+(k+2)+","+K+")=mu_L("+(k+2)+")="+mu_L(k+2));
+                Ftmp(k+2, K) = mu_L(k+2);
+                if ~committedU(k+2)
+                    disp("Diag k="+k+": Ftmp("+K+","+(k+2)+")=mu_U("+(k+2)+")="+mu_U(k+2));
+                    Ftmp(K, k+2) = mu_U(k+2);
+                else
+                    disp("Diag k="+k+": SKIP Ftmp("+K+","+(k+2)+") (committed by col push)");
+                end
+            end
+            P([k k+1], :) = P([k+1 k], :);
+            Q(:, [k k+1]) = Q(:, [k+1 k]);
+        else
+            % ---- Column push ----
+            disp("ColPush k="+k+": rp(k-1)*rho(k+1) + s_L*s_U = 0");
+            rhoprime(k) = s_Uk;
+            disp("ColPush k="+k+": Ftmp("+k+","+(k+1)+")=s_Uk="+s_Uk);
+            Ftmp(k, k+1) = s_Uk;
+            disp("ColPush k="+k+": Ftmp("+k+","+k+")=rho("+k+")="+rho(k));
+            Ftmp(k, k)   = rho(k);
+
+            [Ftmp, L, Ut, rho, mu_L, mu_U, h_L, h_U] = sCpush(k, L, Ut, rho, Ftmp, rhoprime, s_Lk, s_Uk, mu_L, mu_U, h_L, h_U);
+
+            % Mark cells the col push authoritatively wrote to Ftmp(k, ...).
+            % These are k, k+1, and any j >= k+2 that fell into sCpush's
+            % (extended) seedRows set: j in nnz(Ut(:,k)) union nnz(Ut(:,k+1)).
+            if k == K
+                committedU(k)   = true;
+                committedU(k+1) = true;
+                sr = union(find(Ut(:, k)), find(Ut(:, k+1)));
+                sr = sr(sr >= k+2 & sr <= n);
+                committedU(sr) = true;
+                disp("ColPush k="+k+": committedU cols = "+mat2str(find(committedU)'));
+            end
+
+            Q(:, [k k+1]) = Q(:, [k+1 k]);
+        end
+    end
+
+    % Post-loop: fill whichever Ftmp cell maps to Fupdated(n, n)
+    r = find(P(n, :));
+    c = find(Q(:, n));
+    disp("Post-loop: Ftmp("+r+","+c+") = L("+n+","+n+") = "+L(n, n));
+    Ftmp(r, c) = L(n, n);
+end
+
+function v = at1(vec, idx)
+    if idx == 0
+        v = 1;
+    else
+        v = vec(idx);
+    end
+end
+
+function L = lower(F)
+    n = size(F, 1);
+    L = zeros(n, n);
+    for i = 1:n
+        for j = 1:i
+            L(i, j) = F(i, j);
+        end
+    end
+end
+
+function U = upper(F)
+    n = size(F, 1);
+    U = zeros(n, n);
+    for i = 1:n
+        for j = i:n
+            U(i, j) = F(i, j);
+        end
+    end
+end
+
+
+==================
+sCpush.m
+==================
+function [Ftmp, L, Ut, rho, mu_L, mu_U, h_L, h_U] = sCpush(k, L, Ut, rho, Ftmp, rhoprime, s_Lk, s_Uk, mu_L, mu_U, h_L, h_U)
+% Column push at iteration k. Precondition: rp(k-1)*rho(k+1) + s_Lk*s_Uk == 0
+% and s_Uk != 0 (guaranteed by the diagonal-push-fail branch of the caller).
+%
+% Returns updated Ftmp, plus L/Ut/rho (sign flips) and mu_L/mu_U/h_L/h_U
+% (bring-ups on nonzero entries).
+
+    n = size(L, 1);
+
+    % ---- Bring mu_L tail (rows k+1..n, nonzero) up to iter k-1 ----
+    for i = (k+1):n
+        if mu_L(i) ~= 0 && h_L(i) ~= k-1
+            disp("LColHist: mu_L("+i+") = (rp("+(k-1)+")*mu_L("+i+"))/rp("+h_L(i)+") = ( "+at1(rhoprime,k-1)+" * "+mu_L(i)+" )/"+at1(rhoprime,h_L(i))+" = "+((at1(rhoprime,k-1)*mu_L(i))/at1(rhoprime,h_L(i))));
+            mu_L(i) = (at1(rhoprime, k-1) * mu_L(i)) / at1(rhoprime, h_L(i));
+            h_L(i)  = k-1;
+        end
+    end
+
+    % ---- L-side backtracking into column k+1 of Ftmp (includes i = k+1) ----
+    rowsL  = colrows(L, k+1, k+1, n);
+    rowsMu = find(mu_L);  rowsMu = rowsMu(rowsMu >= k+1 & rowsMu <= n);
+    rows   = union(rowsL(:), rowsMu(:));
+    for i = rows(:).'
+        val = (at1(rhoprime, k-1) * L(i, k+1) + s_Uk * mu_L(i)) / at1(rho, k);
+        disp("LColBacktrack: Ftmp("+i+","+(k+1)+") = (rp("+(k-1)+")*L("+i+","+(k+1)+") + s_Uk*mu_L("+i+"))/rho("+k+") = ( "+at1(rhoprime,k-1)+" * "+L(i,k+1)+" + "+s_Uk+" * "+mu_L(i)+" )/"+at1(rho,k)+" = "+val);
+        Ftmp(i, k+1) = val;
+    end
+
+    % ---- U-side RwSOP (strategy a): touch cols where either the seed row
+    % (Ut(:,k)) or the row k+1 (Ut(:,k+1)) has a nonzero, restricted to j>=k+2.
+    % Both terms of the formula matter: the seed contributes rho_{k+1}*seed(j)
+    % and the row-k+1 entry contributes s_Uk*Ut(j,k+1).
+    seedRows = union(find(Ut(:, k)), find(Ut(:, k+1)));
+    seedRows = seedRows(seedRows >= k+2 & seedRows <= n);
+    for j = seedRows(:).'
+        if h_U(j) ~= k-1
+            disp("UColHist: mu_U("+j+") = (rp("+(k-1)+")*mu_U("+j+"))/rp("+h_U(j)+") = ( "+at1(rhoprime,k-1)+" * "+mu_U(j)+" )/"+at1(rhoprime,h_U(j))+" = "+((at1(rhoprime,k-1)*mu_U(j))/at1(rhoprime,h_U(j))));
+            mu_U(j) = (at1(rhoprime, k-1) * mu_U(j)) / at1(rhoprime, h_U(j));
+            h_U(j)  = k-1;
+        end
+        disp("UColSeed:  Ftmp("+k+","+j+") = mu_U("+j+") = "+mu_U(j));
+        Ftmp(k, j)   = mu_U(j);
+        val = (s_Uk * Ut(j, k+1) - rho(k+1) * mu_U(j)) / rho(k);
+        disp("UColRwSOP: Ftmp("+(k+1)+","+j+") = (s_Uk*Ut("+j+","+(k+1)+") - rho("+(k+1)+")*mu_U("+j+"))/rho("+k+") = ( "+s_Uk+" * "+Ut(j,k+1)+" - "+rho(k+1)+" * "+mu_U(j)+" )/"+rho(k)+" = "+val);
+        Ftmp(k+1, j) = val;
+    end
+
+    % ---- Sign flips ----
+    disp("ColPush signflip: rho("+(k+1)+":"+n+") *= -1");
+    rho(k+1:n) = -rho(k+1:n);
+    L(k+1, k+1)  = rho(k+1);
+    Ut(k+1, k+1) = rho(k+1);
+    if k+2 <= n
+        L(k+2:n, k+1:n)  = -L(k+2:n, k+1:n);
+        Ut(k+2:n, k+1:n) = -Ut(k+2:n, k+1:n);
+    end
+end
+
+function v = at1(vec, idx)
+    if idx == 0
+        v = 1;
+    else
+        v = vec(idx);
+    end
+end
+
+function r = colrows(L, col, lo, hi)
+    r = find(L(:, col));
+    r = r(r >= lo & r <= hi);
+end
+
+function L = lower(F)
+    n = size(F, 1);
+    L = zeros(n, n);
+    for i = 1:n
+        for j = 1:i
+            L(i, j) = F(i, j);
+        end
+    end
+end
+
+function U = upper(F)
+    n = size(F, 1);
+    U = zeros(n, n);
+    for i = 1:n
+        for j = i:n
+            U(i, j) = F(i, j);
+        end
+    end
+end
