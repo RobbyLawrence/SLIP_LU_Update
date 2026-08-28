@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make bin/sdip)",
+      "Bash(./bin/sdip -Se dd8.txt 3)",
+      "Bash(./bin/sdip -Sh cycle_Bases/basis_k0_B.txt 100)",
+      "Bash(grep -n \"^static\\\\|^SLIP_info\\\\|^int64_t\\\\|^void\\\\|^int main\\\\|^}$\\\\|^\\\\*/\" /Users/robertlawrence/SLIP_LU_Update/SLIP_LU/Demo/sdip.c)",
+      "Bash(./bin/sdip cycle_Bases/basis_k0_B.txt 100)",
+      "Bash(python3 find_mixed_chain.py)",
+      "Bash(./bin/sdip mix4.txt 2)",
+      "Bash(python3 *)",
+      "Bash(cc -Wall -Wextra -Wpedantic -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -O -I/opt/homebrew/include -I../Include -I../Source -I../../SuiteSparse_config -I../../COLAMD/Include -I../../AMD/Include -c sdipps.c -o obj/sdipps.o)",
+      "Bash(make bin/sdipps)",
+      "Bash(./bin/sdipps cycle_Bases/basis_k0_B.txt 5 0.3)",
+      "Bash(./bin/sdipps cycle_Bases/basis_k0_B.txt 0 0.3)",
+      "Bash(make bin/sdipps_test)",
+      "Bash(./bin/sdipps_test)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(SDIPPS_FORCE_K0=1 ./bin/sdipps cycle_Bases/basis_k0_B.txt 5 0.3)",
+      "Bash(SDIPPS_FORCE_K=__TRACKED_VAR__ ./bin/sdipps cycle_Bases/basis_k0_B.txt 5 0.3)",
+      "Bash(make bin/sdipps bin/sdipps_test)"
+    ]
+  }
+}

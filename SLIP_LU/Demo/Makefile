@@ -21,7 +21,10 @@ endif
 CFLAGS += -Wall -Wextra -Wpedantic -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable
 
 # CF = $(CFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -O
-I = -I../Include -I../Source -I../../SuiteSparse_config -I../../COLAMD/Include -I../../AMD/Include
+I = -I/opt/homebrew/include -I../Include -I../Source -I../../SuiteSparse_config -I../../COLAMD/Include -I../../AMD/Include
+
+# GMP/MPFR live in /opt/homebrew on Apple silicon
+LDFLAGS += -L/opt/homebrew/lib
 
 # LDFLAGS = -L../../lib
 
@@ -39,16 +42,7 @@ $(OBJ):
 
 # Build all demo programs.  Nothing is run automatically; invoke a program
 # (e.g. ./bin/perm) by hand once it is built.
-all: $(BIN)/example $(BIN)/example2 $(BIN)/SLIPLU $(BIN)/qsx_basis $(BIN)/update_demo $(BIN)/perm $(BIN)/sdip $(BIN)/sdipps-port $(BIN)/f0_factor
-
-$(BIN)/f0_factor: $(OBJ)/f0_factor.o $(OBJ)/demos.o | lib $(BIN)
-	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/f0_factor.o $(OBJ)/demos.o $(CS)
-
-$(BIN)/sdip: $(OBJ)/sdip.o | lib $(BIN)
-	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/sdip.o $(CS)
-
-$(BIN)/sdipps-port: $(OBJ)/sdipps-port.o | lib $(BIN)
-	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/sdipps-port.o $(CS)
+all: $(BIN)/example $(BIN)/example2 $(BIN)/SLIPLU $(BIN)/qsx_basis $(BIN)/update_demo $(BIN)/perm $(BIN)/f0_factor
 
 lib:
 	( cd ../Lib ; $(MAKE) )
@@ -61,6 +55,7 @@ $(OBJ)/%.o: %.c Makefile | $(OBJ)
 # Header dependencies: recompile the affected objects when a header changes.
 $(OBJ)/demos.o $(OBJ)/example2.o $(OBJ)/SLIPLU.o $(OBJ)/qsx_basis.o $(OBJ)/update_demo.o $(OBJ)/perm.o $(OBJ)/ordering_ab.o $(OBJ)/f0_factor.o: demos.h
 $(OBJ)/slip_lu_update.o $(OBJ)/update_demo.o: slip_lu_update.h
+$(OBJ)/sdipps.o: sdipps.h
 
 # Link the demo programs from their objects.  'lib' is an order-only
 # prerequisite (after the '|') so the library is kept up to date without
@@ -79,6 +74,9 @@ $(BIN)/qsx_basis: $(OBJ)/qsx_basis.o $(OBJ)/demos.o | lib $(BIN)
 
 $(BIN)/update_demo: $(OBJ)/update_demo.o $(OBJ)/slip_lu_update.o $(OBJ)/demos.o | lib $(BIN)
 	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/update_demo.o $(OBJ)/slip_lu_update.o $(OBJ)/demos.o $(CS)
+
+$(BIN)/f0_factor: $(OBJ)/f0_factor.o $(OBJ)/demos.o | lib $(BIN)
+	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/f0_factor.o $(OBJ)/demos.o $(CS)
 
 $(BIN)/perm: $(OBJ)/perm.o $(OBJ)/demos.o | lib $(BIN)
 	$(CC) $(LDFLAGS) $(CF) -o $@ $(OBJ)/perm.o $(OBJ)/demos.o $(CS)

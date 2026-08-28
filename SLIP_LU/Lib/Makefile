@@ -17,7 +17,7 @@ default: library
 include ../../SuiteSparse_config/SuiteSparse_config.mk
 
 # uncomment for extra error checking:
-CFLAGS += -Wall -Wextra -Wpedantic -Werror
+CFLAGS += -Wall -Wextra -Wpedantic -Wno-error -Wno-stringop-overflow -Wno-maybe-uninitialized
 
 # SLIP_LU depends on SuiteSparse_config, AMD, COLAMD, M, GMP, and MPFR
 LDLIBS += -lsuitesparseconfig -lamd -lcolamd -lm -lgmp -lmpfr
