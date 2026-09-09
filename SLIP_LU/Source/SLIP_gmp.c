@@ -362,7 +362,6 @@ void slip_gmp_failure
  * characters written) upon success, otherwise return negative value (error
  * code) */
 
-#if 0
 /* This function is currently unused, but kept here for future reference. */
 
 SLIP_info SLIP_gmp_fprintf
@@ -386,7 +385,6 @@ SLIP_info SLIP_gmp_fprintf
     // gmp_vfprintf returns -1 if an error occurred.
     return ((n < 0) ? SLIP_INCORRECT_INPUT : SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_gmp_printf
@@ -395,7 +393,6 @@ SLIP_info SLIP_gmp_fprintf
 /* Safely print to the standard output stdout. Return positive value (the number
  * of characters written) upon success, otherwise return negative value (error
  * code) */
-#if 0
 /* This function is currently unused, but kept here for future reference. */
 SLIP_info SLIP_gmp_printf
 (
@@ -417,7 +414,6 @@ SLIP_info SLIP_gmp_printf
     // gmp_vprintf returns -1 if an error occurred.
     return ((n < 0) ? SLIP_INCORRECT_INPUT : SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_gmp_asprintf
@@ -429,7 +425,6 @@ SLIP_info SLIP_gmp_printf
  * written in the string, excluding the null-terminator, or a negative value if
  * an error occurred */
 
-#if 0
 /* This function is currently unused, but kept here for future reference. */
 /* Its functionality is provided by SLIP_mpfr_asprintf. */
 SLIP_info SLIP_gmp_asprintf (char **str, const char *format, ... )
@@ -448,7 +443,6 @@ SLIP_info SLIP_gmp_asprintf (char **str, const char *format, ... )
     // gmp_vasprintf returns a negative value if an error occurred
     return ((n < 0) ? SLIP_INCORRECT_INPUT : SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_gmp_fscanf
@@ -537,7 +531,6 @@ SLIP_info SLIP_mpfr_free_str (char *str)
  * characters written) upon success, otherwise return negative value (error
  * code) */
 
-#if 0
 /* This function is currently unused, but kept here for future reference. */
 
 SLIP_info SLIP_mpfr_fprintf
@@ -565,7 +558,6 @@ SLIP_info SLIP_mpfr_fprintf
     // mpfr_vfprintf returns -1 if an error occurred.
     return ((n < 0) ? SLIP_INCORRECT_INPUT : SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_mpfr_printf
@@ -575,7 +567,6 @@ SLIP_info SLIP_mpfr_fprintf
  * of characters written) upon success, otherwise return negative value (error
  * code) */
 
-#if 0
 /* This function is currently unused, but kept here for future reference. */
 SLIP_info SLIP_mpfr_printf
 (
@@ -601,7 +592,7 @@ SLIP_info SLIP_mpfr_printf
     // mpfr_vprintf returns -1 if an error occurred.
     return ((n < 0) ? SLIP_INCORRECT_INPUT : SLIP_OK) ;
 }
-#endif
+
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 //-------------------------Integer (mpz_t type) functions-----------------------
@@ -696,8 +687,7 @@ SLIP_info SLIP_mpz_set_si
     SLIP_GMP_WRAPPER_FINISH ;
     return (SLIP_OK) ;
 }
-#if 0
-/* This function is currently unused, but kept here for future reference. */
+
 //------------------------------------------------------------------------------
 // SLIP_mpz_set_d
 //------------------------------------------------------------------------------
@@ -715,7 +705,6 @@ SLIP_info SLIP_mpz_set_d
     SLIP_GMP_WRAPPER_FINISH ;
     return (SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_mpz_get_d
@@ -796,8 +785,6 @@ SLIP_info SLIP_mpz_mul
 
 /* Purpose: Safely compute a = b+c */
 
-#if 0
-/* This function is currently unused, but kept here for future reference. */
 
 SLIP_info SLIP_mpz_add
 (
@@ -811,7 +798,6 @@ SLIP_info SLIP_mpz_add
     SLIP_GMP_WRAPPER_FINISH ;
     return (SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_mpz_addmul
@@ -820,8 +806,6 @@ SLIP_info SLIP_mpz_add
 /* Purpose: Safely set an mpz number += product of two mpz numbers,
  * i.e., x = x + y*z */
 
-#if 0
-/* This function is currently unused, but kept here for future reference. */
 SLIP_info SLIP_mpz_addmul
 (
     mpz_t x,
@@ -834,7 +818,6 @@ SLIP_info SLIP_mpz_addmul
     SLIP_GMP_WRAPPER_FINISH ;
     return (SLIP_OK) ;
 }
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_mpz_submul
@@ -1658,7 +1641,6 @@ SLIP_info SLIP_mpfr_ui_pow_ui
 
 /* Purpose: Safely take the log2 of an mpfr number */
 
-#if 0
 /* This function is currently unused, but kept here for future reference. */
 
 SLIP_info SLIP_mpfr_log2
@@ -1674,7 +1656,6 @@ SLIP_info SLIP_mpfr_log2
     return (SLIP_OK) ;
 }
 
-#endif
 
 //------------------------------------------------------------------------------
 // SLIP_mpfr_sgn
