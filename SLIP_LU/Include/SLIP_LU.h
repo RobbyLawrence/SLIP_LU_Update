@@ -762,8 +762,6 @@ SLIP_info SLIP_mpfr_free_cache (void) ;
 
 SLIP_info SLIP_mpfr_free_str (char *str) ;
 
-#if 0
-// These functions are currently unused, but kept here for future reference.
 SLIP_info SLIP_gmp_asprintf (char **str, const char *format, ... ) ;
 SLIP_info SLIP_gmp_printf (const char *format, ... ) ;
 SLIP_info SLIP_mpfr_printf ( const char *format, ... ) ;
@@ -773,7 +771,6 @@ SLIP_info SLIP_mpz_set_d (mpz_t x, const double y) ;
 SLIP_info SLIP_mpz_add (mpz_t a, const mpz_t b, const mpz_t c) ;
 SLIP_info SLIP_mpz_addmul (mpz_t x, const mpz_t y, const mpz_t z) ;
 SLIP_info SLIP_mpfr_log2(mpfr_t x, const mpfr_t y, const mpfr_rnd_t rnd) ;
-#endif
 
 #endif
 
